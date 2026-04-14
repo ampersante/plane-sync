@@ -473,28 +473,67 @@ def render_markdown(data: dict, maps: dict, warnings: list[str],
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
+def _load_profile(name: str) -> dict:
+    """Load a named profile from profiles.json next to this script."""
+    profiles_path = Path(__file__).resolve().parent / "profiles.json"
+    if not profiles_path.is_file():
+        print(f"Error: profiles.json not found at {profiles_path}", file=sys.stderr)
+        sys.exit(1)
+    with open(profiles_path, encoding="utf-8") as f:
+        profiles = json.load(f)
+    if name not in profiles:
+        available = ", ".join(profiles.keys()) or "(none)"
+        print(f"Error: profile '{name}' not found. Available: {available}", file=sys.stderr)
+        sys.exit(1)
+    return profiles[name]
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Plane project snapshot → markdown",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
-  python3 plane_snapshot.py --workspace bigbowls --project e892b839-...
-  python3 plane_snapshot.py -w bigbowls -p e892b839-... --descriptions
-  python3 plane_snapshot.py -w bigbowls -p e892b839-... -o ./snapshot.md --env ./.env
+  python3 plane_snapshot.py --profile idle-unknown
+  python3 plane_snapshot.py --profile idle-unknown --descriptions
+  python3 plane_snapshot.py -w bigbowls -p e892b839-... -o ./snapshot.md
 """)
-    parser.add_argument("-w", "--workspace", required=True,
+    parser.add_argument("--profile",
+                        help="Named profile from profiles.json (provides workspace, project, env, output)")
+    parser.add_argument("-w", "--workspace",
                         help="Plane workspace slug")
-    parser.add_argument("-p", "--project", required=True,
+    parser.add_argument("-p", "--project",
                         help="Plane project UUID")
     parser.add_argument("--prefix", default=None,
                         help="Work item ID prefix (e.g. CT). Auto-detected if omitted.")
     parser.add_argument("--descriptions", action="store_true",
                         help="Include work item descriptions in output")
-    parser.add_argument("-o", "--output", type=Path, default=Path("snapshot.md"),
+    parser.add_argument("-o", "--output", type=Path, default=None,
                         help="Output file path (default: ./snapshot.md)")
     parser.add_argument("--env", type=Path, default=None,
                         help="Path to .env file (default: search current dir and parents)")
     args = parser.parse_args()
+
+    # Apply profile defaults (CLI args override profile values)
+    if args.profile:
+        profile = _load_profile(args.profile)
+        if not args.workspace:
+            args.workspace = profile.get("workspace")
+        if not args.project:
+            args.project = profile.get("project")
+        if not args.output and "output" in profile:
+            args.output = Path(profile["output"])
+        if not args.env and "env" in profile:
+            args.env = Path(profile["env"])
+
+    # Defaults for values still not set
+    if not args.output:
+        args.output = Path("snapshot.md")
+
+    # Validate required args
+    if not args.workspace or not args.project:
+        print("Error: --workspace and --project are required (or use --profile).", file=sys.stderr)
+        parser.print_usage(sys.stderr)
+        sys.exit(1)
 
     # Load .env
     search_dirs = [Path.cwd(), args.output.resolve().parent]

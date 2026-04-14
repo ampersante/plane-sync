@@ -17,44 +17,64 @@ One command → one markdown file with:
 - No dependencies (stdlib only)
 - Plane API token ([get one here](https://app.plane.so) → workspace settings → API Tokens)
 
-## Usage
+## Quick start
 
 ```bash
-# Basic
-PLANE_API_TOKEN=plane_api_xxx python3 plane_snapshot.py -w <workspace> -p <project_uuid>
-
-# With .env file
+# 1. Add your API token
 echo "PLANE_API_TOKEN=plane_api_xxx" > .env
+
+# 2. Run with a profile
+python3 plane_snapshot.py --profile idle-unknown
+
+# 3. Or run with explicit args
 python3 plane_snapshot.py -w bigbowls -p e892b839-ce38-4c8e-8082-624c67026dbc
+```
 
-# With descriptions and custom output
-python3 plane_snapshot.py -w bigbowls -p e892b839-... --descriptions -o ./my-snapshot.md
+## Profiles
 
-# Point to .env in another directory
-python3 plane_snapshot.py -w bigbowls -p e892b839-... --env /path/to/project/.env
+`profiles.json` stores named presets for projects you work with:
+
+```json
+{
+  "idle-unknown": {
+    "workspace": "bigbowls",
+    "project": "e892b839-ce38-4c8e-8082-624c67026dbc",
+    "env": "/path/to/project/.env",
+    "output": "/path/to/project/snapshot.md"
+  }
+}
+```
+
+```bash
+# Run by profile name — workspace, project, env, output all come from profiles.json
+python3 plane_snapshot.py --profile idle-unknown
+python3 plane_snapshot.py --profile idle-unknown --descriptions
+
+# CLI args override profile values
+python3 plane_snapshot.py --profile idle-unknown -o /tmp/test.md
 ```
 
 ## Arguments
 
 | Flag | Required | Description |
 |---|---|---|
-| `-w`, `--workspace` | Yes | Plane workspace slug |
-| `-p`, `--project` | Yes | Plane project UUID |
+| `--profile` | No | Named profile from profiles.json |
+| `-w`, `--workspace` | Yes* | Plane workspace slug |
+| `-p`, `--project` | Yes* | Plane project UUID |
 | `--prefix` | No | Work item ID prefix (e.g. CT). Auto-detected if omitted |
 | `--descriptions` | No | Include work item descriptions in output |
 | `-o`, `--output` | No | Output file path (default: `./snapshot.md`) |
 | `--env` | No | Path to .env file (default: searches current dir and parents) |
 
+*Not required if `--profile` provides them.
+
 ## Using with multiple projects
 
-Keep a `.env` with your API token in each project's config directory, then run:
+Add each project to `profiles.json`, then run by name:
 
 ```bash
-# Project A
-python3 ~/path/to/plane_snapshot.py -w myworkspace -p <uuid-a> -o ./projectA/snapshot.md --env ./projectA/.env
-
-# Project B
-python3 ~/path/to/plane_snapshot.py -w myworkspace -p <uuid-b> -o ./projectB/snapshot.md --env ./projectB/.env
+python3 plane_snapshot.py --profile idle-unknown
+python3 plane_snapshot.py --profile another-project
 ```
 
-Or use a single shared `.env` and different project IDs.
+Each profile points to its own `.env` (for per-project tokens) and output path.

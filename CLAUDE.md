@@ -1,47 +1,87 @@
+# plane-sync
+
+## Startup: порядок чтения
+
+При входе в сессию читать строго в этом порядке, не больше:
+
+1. `CLAUDE.md` (этот файл) — routing, project map, правила
+2. `session-handoff.md` — где остановились, текущее состояние
+3. `tasks.md` — если задача связана с backlog
+
+Дальше добирать контекст только по необходимости:
+- Изменения скрипта → `plane_snapshot.py` (целевые функции, не весь файл)
+- Непонятно почему так сделано → `decisions.md`
+- Пользовательская документация → `README.md`
+
+**Не читать всё подряд.** Проект маленький, но привычка важна.
+
+## Routing
+
+| Тип запроса | Что делать |
+|---|---|
+| Новая фича / изменение скрипта | `session-handoff.md` → целевой код → реализация → обновить `tasks.md` и `decisions.md` |
+| Баг / что-то сломалось | `session-handoff.md` (known limitations) → воспроизвести → починить |
+| Тестирование на проекте | Использовать `--profile` из `profiles.json` (см. ниже) |
+| Вопрос «почему так» | `decisions.md` |
+| Новый проект-профиль | Добавить в `profiles.json`, не менять скрипт |
+
 ## Project Map
 
 | Документ | Назначение |
-|----------|-----------|
+|---|---|
 | `plane_snapshot.py` | Скрипт выгрузки snapshot из Plane API в markdown |
-| `tasks.md` | Список задач — backlog / done |
-| `decisions.md` | Журнал ключевых решений — контекст, причины, следствия |
-| `session-handoff.md` | Точка входа между сессиями — текущее состояние, где остановились |
-| `README.md` | Документация для пользователя — установка, использование, аргументы |
-| `.env` | API-токен Plane (никогда не коммитить) |
+| `profiles.json` | Профили проектов для тестирования и запуска |
+| `tasks.md` | Backlog задач на доработку |
+| `decisions.md` | Журнал ключевых решений |
+| `session-handoff.md` | Точка входа между сессиями |
+| `README.md` | Документация для пользователя |
+| `.env` | API-токен Plane (gitignored, fallback если профиль не указывает свой .env) |
+
+## Профили проектов
+
+`profiles.json` хранит preset'ы для запуска на разных проектах:
+
+```bash
+# Запуск по имени профиля — всё остальное берётся из profiles.json
+python3 plane_snapshot.py --profile idle-unknown
+
+# Прямые аргументы по-прежнему работают (без профиля)
+python3 plane_snapshot.py -w bigbowls -p <uuid> -o ./snapshot.md
+```
+
+Из сессии Claude Code в этой папке можно тестировать любую фичу на любом проекте одной командой, не переключаясь в другую папку.
 
 ### Контекст продукта
-Ad hoc инструмент для выгрузки полного состояния Plane-проекта в локальный markdown-файл, оптимизированный для LLM. Stdlib-only Python, без зависимостей. Используется как внешняя утилита из рабочих проектов — скрипт живёт отдельно, в проектах хранится только `.env` и `snapshot.md`.
+Ad hoc инструмент для выгрузки полного состояния Plane-проекта в локальный markdown. Stdlib-only Python, без зависимостей. Живёт отдельно от рабочих проектов — в проектах хранится только `.env` и `snapshot.md`.
 
-### Ключевые технические решения (см. decisions.md для деталей)
-- Stdlib only — без requests, без python-dotenv, работает на любой машине с Python 3.10+
-- Output в markdown с таблицами, UUID резолвлены в имена — один Read call для LLM
-- Sequential relations fetch с throttling 0.3s — обход rate limit Plane cloud (~50 req/min)
-- Endpoint `module-issues/` вместо `work-items/` для module membership (REST API quirk)
-- Параметрический: workspace, project ID, output path — через CLI аргументы
+### Ключевые технические решения (см. decisions.md)
+- Stdlib only (Python 3.10+), без внешних зависимостей
+- Output в markdown с таблицами, UUID резолвлены в имена
+- Sequential relations fetch с throttling 0.3s (обход rate limit ~50 req/min)
+- Endpoint `module-issues/` для module membership (REST API quirk)
+- Параметрический: через CLI аргументы или `--profile`
 
 ---
 
 ## Engineering Operating Rules
 
-### Constraints (always apply)
+### Constraints
 - **Scope:** Only what's explicitly requested. No side refactors.
 - **Dependencies:** Stdlib only. No new packages без explicit confirmation.
 - **Secrets:** Never output, log, or commit `.env`, API keys, tokens.
 - **Diffs:** Change only the necessary lines; prefer small search/replace.
-- **No backup duplication:** Never create `*_v1`, `*_backup`. Use Git history.
 
-### Before coding (mandatory preflight)
-0) State concisely (1–4 lines max): simplest approach + what gets 80% of the result.
-1) Check session-handoff.md and decisions.md for context.
-2) Search for existing patterns in plane_snapshot.py before adding new code.
+### Before coding
+0) State concisely (1–4 lines): simplest approach + что даст 80% результата.
+1) Check `session-handoff.md` и `decisions.md` for context.
+2) Search for existing patterns в скрипте before adding new code.
 
 ### Execution rules
 - Match existing conventions and structure.
 - Prefer atomic changes (one request = one change set).
-- After functional changes, update `tasks.md` (mark done / add new) and `decisions.md` (only if non-obvious decision was made).
-- If you notice out-of-scope issues, log them in `tasks.md`, don't fix inline.
+- After functional changes: update `tasks.md` (mark done / add new), `decisions.md` (only if non-obvious decision).
+- Out-of-scope issues → log in `tasks.md`, don't fix inline.
 
 ### When blocked
 - State exactly what's missing/contradictory.
-- Ask 1–2 precise questions.
-- Don't silently assume.
+- Ask 1–2 precise questions. Don't silently assume.

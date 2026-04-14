@@ -12,7 +12,7 @@ Ad hoc инструмент для выгрузки snapshot'ов из Plane (pl
 ## Текущее состояние
 
 - Скрипт работает, протестирован на проекте BigBowls (280 items, 472 relations, 0 warnings).
-- Параметрический: workspace, project ID, output path, .env path — всё через CLI аргументы.
+- Параметрический: через CLI аргументы или `--profile` из `profiles.json`.
 - Авто-определение ID prefix (CT, BB, etc.) через API.
 - Валидация: parent resolution, reference integrity, relation integrity.
 - Rate limit handling: sequential fetch с throttling 0.3s, retry с backoff.
@@ -21,7 +21,7 @@ Ad hoc инструмент для выгрузки snapshot'ов из Plane (pl
 
 ## На чём остановились
 
-- Initial commit сделан на ветке main.
+- Профили проектов (`profiles.json`) добавлены — `--profile idle-unknown` работает.
 - GitHub remote ещё не создан.
 - Write-back (Phase 2) не начат.
 
