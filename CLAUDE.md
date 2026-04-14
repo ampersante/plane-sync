@@ -30,7 +30,7 @@
 | Документ | Назначение |
 |---|---|
 | `plane_snapshot.py` | Скрипт выгрузки snapshot из Plane API в markdown |
-| `profiles.json` | Профили проектов для тестирования и запуска |
+| `profiles.json` | Профили проектов для тестирования и запуска (gitignored, создаётся из `profiles.example.json`) |
 | `tasks.md` | Backlog задач на доработку |
 | `decisions.md` | Журнал ключевых решений |
 | `session-handoff.md` | Точка входа между сессиями |

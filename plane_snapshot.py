@@ -521,9 +521,9 @@ def main():
         if not args.project:
             args.project = profile.get("project")
         if not args.output and "output" in profile:
-            args.output = Path(profile["output"])
+            args.output = Path(os.path.expanduser(profile["output"]))
         if not args.env and "env" in profile:
-            args.env = Path(profile["env"])
+            args.env = Path(os.path.expanduser(profile["env"]))
 
     # Defaults for values still not set
     if not args.output:

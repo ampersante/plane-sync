@@ -73,7 +73,7 @@ Done! Snapshot saved to .../snapshot.md
                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
    ```
 
-3. Открой `profiles.json` и добавь новый блок:
+3. Открой `profiles.json` (если его нет — скопируй `profiles.example.json` и переименуй) и добавь новый блок:
 
    ```json
    {

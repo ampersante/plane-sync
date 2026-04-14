@@ -32,15 +32,21 @@ python3 plane_snapshot.py -w bigbowls -p e892b839-ce38-4c8e-8082-624c67026dbc
 
 ## Profiles
 
-`profiles.json` stores named presets for projects you work with:
+`profiles.json` (gitignored) stores named presets for projects you work with. Copy `profiles.example.json` to get started:
+
+```bash
+cp profiles.example.json profiles.json
+```
+
+Then edit with your projects:
 
 ```json
 {
-  "idle-unknown": {
-    "workspace": "bigbowls",
-    "project": "e892b839-ce38-4c8e-8082-624c67026dbc",
-    "env": "/path/to/project/.env",
-    "output": "/path/to/project/snapshot.md"
+  "my-project": {
+    "workspace": "my-workspace-slug",
+    "project": "00000000-0000-0000-0000-000000000000",
+    "env": "~/path/to/project/.env",
+    "output": "~/path/to/project/snapshot.md"
   }
 }
 ```

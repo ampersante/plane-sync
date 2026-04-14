@@ -1,0 +1,8 @@
+{
+  "my-project": {
+    "workspace": "my-workspace-slug",
+    "project": "00000000-0000-0000-0000-000000000000",
+    "env": "~/path/to/project/.env",
+    "output": "~/path/to/project/snapshot.md"
+  }
+}
