@@ -1,4 +1,5 @@
 .env
+profiles.json
 snapshot.md
 __pycache__/
 *.pyc
