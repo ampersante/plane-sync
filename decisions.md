@@ -31,3 +31,21 @@
 **Решение**: для получения work items модуля использовать `modules/{id}/module-issues/`, не `modules/{id}/work-items/`.
 **Почему**: REST API Plane возвращает 404 на `work-items/` внутри модулей. MCP абстрагирует это, но прямой API — нет.
 **Следствие**: зафиксировано как known quirk. Может измениться в будущих версиях API.
+
+## DEC-006 — Shared API layer в plane_api.py (2026-04-21)
+
+**Решение**: вынести общий API-слой (auth, retry, rate limit, profiles) в `plane_api.py`. Оба скрипта импортируют из него.
+**Почему**: `plane_write.py` нужны те же функции (auth, retry, rate limit). Дублировать нельзя — будет рассинхрон. Одна точка изменения.
+**Следствие**: `plane_snapshot.py` рефакторнут на импорт из `plane_api.py`. Добавлены `api_post()`, `api_patch()`.
+
+## DEC-007 — Dry-run по умолчанию для write (2026-04-21)
+
+**Решение**: `plane_write.py` без `--execute` показывает план создания, но не делает API-мутаций. Duplicate detection по exact name match — skip по умолчанию.
+**Почему**: защита от случайного создания дублей, лишних правок. Пользователь хочет видеть что произойдёт до того как это случится.
+**Следствие**: каждый запуск на запись — двухшаговый: dry-run → review → execute.
+
+## DEC-008 — Markdown input format close to snapshot (2026-04-21)
+
+**Решение**: формат входного MD-файла для `plane_write.py` максимально близок к формату snapshot'а (таблицы с теми же колонками, секции Relations/Descriptions/Comments/Links).
+**Почему**: LLM (Claude) генерирует входной файл — чем ближе формат к snapshot'у, тем меньше ошибок при генерации. Пользователь работает через чат.
+**Следствие**: парсер обрабатывает markdown-таблицы. Ref-колонка (NEW-1, NEW-2) для внутренних ссылок (parent, relations) между новыми items.

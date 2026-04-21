@@ -9,7 +9,7 @@
 3. `tasks.md` — если задача связана с backlog
 
 Дальше добирать контекст только по необходимости:
-- Изменения скрипта → `plane_snapshot.py` (целевые функции, не весь файл)
+- Изменения скрипта → `plane_snapshot.py` / `plane_write.py` / `plane_api.py` (целевые функции, не весь файл)
 - Непонятно почему так сделано → `decisions.md`
 - Пользовательская документация → `README.md`
 
@@ -29,7 +29,9 @@
 
 | Документ | Назначение |
 |---|---|
-| `plane_snapshot.py` | Скрипт выгрузки snapshot из Plane API в markdown |
+| `plane_api.py` | Общий API-слой: auth, retry, rate limit, profiles (используется обоими скриптами) |
+| `plane_snapshot.py` | Read: выгрузка snapshot из Plane API в markdown |
+| `plane_write.py` | Write: создание work items в Plane из markdown-файла |
 | `profiles.json` | Профили проектов для тестирования и запуска (gitignored, создаётся из `profiles.example.json`) |
 | `tasks.md` | Backlog задач на доработку |
 | `decisions.md` | Журнал ключевых решений |
@@ -42,8 +44,12 @@
 `profiles.json` хранит preset'ы для запуска на разных проектах:
 
 ```bash
-# Запуск по имени профиля — всё остальное берётся из profiles.json
+# Snapshot (read)
 python3 plane_snapshot.py --profile idle-unknown
+
+# Write (create items from MD)
+python3 plane_write.py --profile idle-unknown -i tasks.md           # dry-run
+python3 plane_write.py --profile idle-unknown -i tasks.md --execute # создание
 
 # Прямые аргументы по-прежнему работают (без профиля)
 python3 plane_snapshot.py -w bigbowls -p <uuid> -o ./snapshot.md
@@ -52,7 +58,7 @@ python3 plane_snapshot.py -w bigbowls -p <uuid> -o ./snapshot.md
 Из сессии Claude Code в этой папке можно тестировать любую фичу на любом проекте одной командой, не переключаясь в другую папку.
 
 ### Контекст продукта
-Ad hoc инструмент для выгрузки полного состояния Plane-проекта в локальный markdown. Stdlib-only Python, без зависимостей. Живёт отдельно от рабочих проектов — в проектах хранится только `.env` и `snapshot.md`.
+Ad hoc инструмент для двусторонней синхронизации с Plane: выгрузка snapshot в markdown + создание задач из markdown. Stdlib-only Python, без зависимостей. Живёт отдельно от рабочих проектов — в проектах хранится только `.env` и `snapshot.md`.
 
 ### Ключевые технические решения (см. decisions.md)
 - Stdlib only (Python 3.10+), без внешних зависимостей
@@ -60,6 +66,9 @@ Ad hoc инструмент для выгрузки полного состоя�
 - Sequential relations fetch с throttling 0.3s (обход rate limit ~50 req/min)
 - Endpoint `module-issues/` для module membership (REST API quirk)
 - Параметрический: через CLI аргументы или `--profile`
+- Shared API layer в `plane_api.py` (DEC-006)
+- Write: dry-run по умолчанию, `--execute` для создания (DEC-007)
+- Write input: markdown close to snapshot format (DEC-008)
 
 ---
 

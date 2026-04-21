@@ -1,7 +1,7 @@
 # Session Handoff
 
 Статус: active
-Обновлено: 2026-04-14
+Обновлено: 2026-04-21
 
 Нулевая точка входа между сессиями. Читать первым делом чтобы понять где остановились.
 
@@ -11,19 +11,17 @@ Ad hoc инструмент для выгрузки snapshot'ов из Plane (pl
 
 ## Текущее состояние
 
-- Скрипт работает, протестирован на проекте BigBowls (280 items, 472 relations, 0 warnings).
+- **Read** (`plane_snapshot.py`): работает, протестирован на BigBowls (280 items, 472 relations, 0 warnings).
+- **Write** (`plane_write.py`): Phase 1 реализован — создание work items из MD-файла. Dry-run по умолчанию, `--execute` для создания. Поддержка: items с полями, parent/child, relations, modules, cycles, comments, links. Duplicate detection.
+- **Shared API** (`plane_api.py`): общий слой для обоих скриптов (auth, retry, rate limit, profiles, GET/POST/PATCH).
 - Параметрический: через CLI аргументы или `--profile` из `profiles.json`.
-- Авто-определение ID prefix (CT, BB, etc.) через API.
-- Валидация: parent resolution, reference integrity, relation integrity.
-- Rate limit handling: sequential fetch с throttling 0.3s, retry с backoff.
-- Найден и обойдён Cloudflare блок на дефолтный User-Agent urllib.
-- Найден правильный endpoint для module work items: `module-issues/`, не `work-items/`.
+- Rate limit handling: sequential с throttling 0.3s, retry с backoff.
 
 ## На чём остановились
 
-- Профили проектов (`profiles.json`) добавлены — `--profile idle-unknown` работает.
+- `plane_write.py` Phase 1 (create) готов, нуждается в тестировании на реальном проекте.
+- Phase 2 (update/delete) не начат.
 - GitHub remote ещё не создан.
-- Write-back (Phase 2) не начат.
 
 ## Известные ограничения
 
