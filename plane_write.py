@@ -621,7 +621,7 @@ def execute(resolved: list[ResolvedItem], verbose: bool) -> None:
                 print(f"  [SKIP] Relation {item.spec.ref} → {target_ref}: target not created", file=sys.stderr)
                 continue
 
-            body = {"relation_type": rel_type, "related_issues": [target_uuid]}
+            body = {"relation_type": rel_type, "issues": [target_uuid]}
             if verbose:
                 print(f"  [POST] work-items/{item.created_id}/relations/ {body}", file=sys.stderr)
 
