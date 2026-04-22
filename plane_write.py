@@ -22,7 +22,7 @@ from pathlib import Path
 
 from plane_api import (
     load_dotenv, set_base_url, api_get, api_get_list, api_get_paginated,
-    api_post, load_profile,
+    api_post, api_patch, api_delete, load_profile,
 )
 
 
@@ -31,10 +31,12 @@ from plane_api import (
 @dataclass
 class WorkItemSpec:
     """Parsed from markdown, human-readable names."""
-    ref: str                                        # "NEW-1" or auto-generated
-    name: str
+    action: str = "create"                          # "create", "update", "delete"
+    existing_id: str = ""                           # "CT-42" for update/delete
+    ref: str = ""                                   # "NEW-1" or auto-generated
+    name: str = ""
     state: str = ""                                 # human name
-    priority: str = "none"                          # urgent/high/medium/low/none
+    priority: str = ""                              # urgent/high/medium/low/none (empty = don't set/change)
     labels: list[str] = field(default_factory=list) # human names
     assignees: list[str] = field(default_factory=list)
     module: str = ""
@@ -45,13 +47,16 @@ class WorkItemSpec:
     comments: list[str] = field(default_factory=list)
     links: list[str] = field(default_factory=list)
     line_number: int = 0
+    _labels_explicit: bool = False                  # True if labels column had a value (even empty)
+    _assignees_explicit: bool = False               # True if assignees column had a value
 
 
 @dataclass
 class ResolvedItem:
-    """Ready to POST to API."""
+    """Ready for API call (POST/PATCH/DELETE)."""
     spec: WorkItemSpec
     api_body: dict = field(default_factory=dict)
+    existing_uuid: str | None = None                # resolved UUID for update/delete
     parent_uuid: str | None = None
     module_id: str | None = None
     cycle_id: str | None = None
@@ -60,7 +65,7 @@ class ResolvedItem:
     links: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
-    # Filled after creation
+    # Filled after execution
     created_id: str | None = None
     created_seq: int | None = None
     skipped: bool = False
@@ -214,10 +219,6 @@ def parse_items_table(section_text: str, section_start: int) -> list[WorkItemSpe
     # Build column index map
     col = {h: i for i, h in enumerate(headers)}
 
-    if "name" not in col:
-        print("Error: 'Name' column required in Items table.", file=sys.stderr)
-        sys.exit(1)
-
     specs: list[WorkItemSpec] = []
     auto_ref = 0
 
@@ -226,26 +227,45 @@ def parse_items_table(section_text: str, section_start: int) -> list[WorkItemSpe
         while len(cells) < len(headers):
             cells.append("")
 
-        name = _unesc(cells[col["name"]]).strip()
-        if not name:
+        # Action: create (default), update, delete
+        action = cells[col.get("action", -1)].strip().lower() if "action" in col else "create"
+        if action not in ("create", "update", "delete"):
+            action = "create"
+
+        # Existing ID for update/delete (e.g. "CT-42")
+        existing_id = cells[col.get("id", -1)].strip() if "id" in col else ""
+
+        name = _unesc(cells[col["name"]]).strip() if "name" in col else ""
+
+        # For delete, name is optional
+        if action == "delete" and not name and not existing_id:
+            continue
+        # For create, name is required
+        if action == "create" and not name:
             continue
 
         auto_ref += 1
         ref = cells[col.get("ref", -1)].strip() if "ref" in col else ""
         if not ref:
-            ref = f"NEW-{auto_ref}"
+            if existing_id:
+                ref = existing_id
+            else:
+                ref = f"NEW-{auto_ref}"
 
-        priority = cells[col.get("priority", -1)].strip().lower() if "priority" in col else "none"
-        if priority not in ("urgent", "high", "medium", "low", "none"):
-            priority = "none"
+        priority_raw = cells[col.get("priority", -1)].strip().lower() if "priority" in col else ""
+        priority = priority_raw if priority_raw in ("urgent", "high", "medium", "low", "none") else ""
 
         labels_str = cells[col.get("labels", -1)].strip() if "labels" in col else ""
         labels = [l.strip() for l in labels_str.split(",") if l.strip()] if labels_str else []
+        labels_explicit = "labels" in col and cells[col["labels"]].strip() != "" or len(labels) > 0
 
         assignees_str = cells[col.get("assignees", -1)].strip() if "assignees" in col else ""
         assignees = [a.strip() for a in assignees_str.split(",") if a.strip()] if assignees_str else []
+        assignees_explicit = "assignees" in col and cells[col["assignees"]].strip() != "" or len(assignees) > 0
 
         spec = WorkItemSpec(
+            action=action,
+            existing_id=existing_id,
             ref=ref,
             name=name,
             state=cells[col.get("state", -1)].strip() if "state" in col else "",
@@ -256,6 +276,8 @@ def parse_items_table(section_text: str, section_start: int) -> list[WorkItemSpe
             cycle=cells[col.get("cycle", -1)].strip() if "cycle" in col else "",
             parent_ref=cells[col.get("parent", -1)].strip() if "parent" in col else "",
             line_number=section_start + line_off,
+            _labels_explicit=labels_explicit,
+            _assignees_explicit=assignees_explicit,
         )
         specs.append(spec)
 
@@ -360,14 +382,48 @@ def parse_input(md_text: str) -> list[WorkItemSpec]:
 
 # ── Resolution ──────────────────────────────────────────────────────────────
 
+def _resolve_existing_id(spec: WorkItemSpec, rmaps: dict) -> str | None:
+    """Resolve an existing item ID (e.g. 'CT-42') to UUID."""
+    if not spec.existing_id:
+        return None
+    key = spec.existing_id.strip().upper()
+    return rmaps["existing_item"].get(key)
+
+
 def resolve_all(specs: list[WorkItemSpec], rmaps: dict) -> list[ResolvedItem]:
     """Resolve human-readable names to UUIDs."""
     resolved: list[ResolvedItem] = []
-    new_refs = {s.ref.upper() for s in specs}
+    new_refs = {s.ref.upper() for s in specs if s.action == "create"}
 
     for spec in specs:
         item = ResolvedItem(spec=spec)
-        body: dict = {"name": spec.name, "priority": spec.priority}
+
+        # Resolve existing ID for update/delete
+        if spec.action in ("update", "delete"):
+            uuid = _resolve_existing_id(spec, rmaps)
+            if uuid:
+                item.existing_uuid = uuid
+            else:
+                item.errors.append(f"Unknown item '{spec.existing_id}'")
+
+        # Delete needs no further resolution
+        if spec.action == "delete":
+            resolved.append(item)
+            continue
+
+        # Build API body — for create: all fields; for update: only non-empty fields
+        body: dict = {}
+        is_update = spec.action == "update"
+
+        # Name
+        if spec.name:
+            body["name"] = spec.name
+
+        # Priority
+        if spec.priority:
+            body["priority"] = spec.priority
+        elif not is_update:
+            body["priority"] = "none"
 
         # State
         if spec.state:
@@ -380,27 +436,33 @@ def resolve_all(specs: list[WorkItemSpec], rmaps: dict) -> list[ResolvedItem]:
             else:
                 body["state"] = state_id
 
-        # Labels
-        label_ids = []
-        for lbl in spec.labels:
-            lbl_id = rmaps["label"].get(lbl.strip().lower())
-            if lbl_id:
-                label_ids.append(lbl_id)
-            else:
-                item.errors.append(f"Unknown label '{lbl}'")
-        if label_ids:
-            body["labels"] = label_ids
+        # Labels — for update, only set if explicitly specified in the row
+        if spec.labels:
+            label_ids = []
+            for lbl in spec.labels:
+                lbl_id = rmaps["label"].get(lbl.strip().lower())
+                if lbl_id:
+                    label_ids.append(lbl_id)
+                else:
+                    item.errors.append(f"Unknown label '{lbl}'")
+            if label_ids:
+                body["labels"] = label_ids
+        elif is_update and spec._labels_explicit:
+            body["labels"] = []  # explicitly clear labels
 
-        # Assignees
-        assignee_ids = []
-        for a in spec.assignees:
-            a_id = rmaps["member"].get(a.strip().lower())
-            if a_id:
-                assignee_ids.append(a_id)
-            else:
-                item.errors.append(f"Unknown member '{a}'")
-        if assignee_ids:
-            body["assignees"] = assignee_ids
+        # Assignees — same logic
+        if spec.assignees:
+            assignee_ids = []
+            for a in spec.assignees:
+                a_id = rmaps["member"].get(a.strip().lower())
+                if a_id:
+                    assignee_ids.append(a_id)
+                else:
+                    item.errors.append(f"Unknown member '{a}'")
+            if assignee_ids:
+                body["assignees"] = assignee_ids
+        elif is_update and spec._assignees_explicit:
+            body["assignees"] = []  # explicitly clear assignees
 
         # Description
         if spec.description_html:
@@ -410,7 +472,6 @@ def resolve_all(specs: list[WorkItemSpec], rmaps: dict) -> list[ResolvedItem]:
         if spec.parent_ref:
             parent_upper = spec.parent_ref.strip().upper()
             if parent_upper.startswith("NEW-") and parent_upper in new_refs:
-                # Will be resolved during execution
                 item.parent_uuid = parent_upper  # placeholder
             elif parent_upper in rmaps["existing_item"]:
                 body["parent"] = rmaps["existing_item"][parent_upper]
@@ -434,7 +495,7 @@ def resolve_all(specs: list[WorkItemSpec], rmaps: dict) -> list[ResolvedItem]:
             else:
                 item.errors.append(f"Unknown cycle '{spec.cycle}'")
 
-        # Relations (keep as refs, resolve during execution)
+        # Relations
         for rel_type, target_ref in spec.relations:
             target_upper = target_ref.strip().upper()
             if target_upper.startswith("NEW-") and target_upper in new_refs:
@@ -461,8 +522,8 @@ def validate(resolved: list[ResolvedItem]) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
 
-    # Check for duplicate refs
-    refs = [r.spec.ref.upper() for r in resolved]
+    # Check for duplicate refs among creates
+    refs = [r.spec.ref.upper() for r in resolved if r.spec.action == "create"]
     seen: set[str] = set()
     for ref in refs:
         if ref in seen:
@@ -472,7 +533,7 @@ def validate(resolved: list[ResolvedItem]) -> tuple[list[str], list[str]]:
     # Check for circular parent references
     ref_to_parent: dict[str, str] = {}
     for item in resolved:
-        if item.spec.parent_ref and item.spec.parent_ref.upper().startswith("NEW-"):
+        if item.spec.action == "create" and item.spec.parent_ref and item.spec.parent_ref.upper().startswith("NEW-"):
             ref_to_parent[item.spec.ref.upper()] = item.spec.parent_ref.upper()
 
     for ref in ref_to_parent:
@@ -485,13 +546,25 @@ def validate(resolved: list[ResolvedItem]) -> tuple[list[str], list[str]]:
             visited.add(current)
             current = ref_to_parent[current]
 
+    # Validate update/delete have existing_id
+    for item in resolved:
+        if item.spec.action in ("update", "delete") and not item.spec.existing_id:
+            errors.append(f"[{item.spec.ref}] {item.spec.action} requires ID column")
+
+    # Validate update has at least one field to change
+    for item in resolved:
+        if item.spec.action == "update" and not item.api_body:
+            errors.append(f"[{item.spec.ref}] update has no fields to change")
+
     # Collect per-item errors
     for item in resolved:
         for err in item.errors:
             errors.append(f"[{item.spec.ref}] {err}")
 
-    # Warnings for missing optional fields
+    # Warnings for missing optional fields (creates only)
     for item in resolved:
+        if item.spec.action != "create":
+            continue
         if not item.spec.state:
             warnings.append(f"[{item.spec.ref}] No state specified — will use project default")
         if not item.spec.assignees:
@@ -502,9 +575,11 @@ def validate(resolved: list[ResolvedItem]) -> tuple[list[str], list[str]]:
 
 def check_duplicates(resolved: list[ResolvedItem], rmaps: dict,
                      allow_duplicates: bool) -> list[str]:
-    """Check for name matches against existing items. Returns list of messages."""
+    """Check for name matches against existing items (creates only). Returns list of messages."""
     messages: list[str] = []
     for item in resolved:
+        if item.spec.action != "create":
+            continue
         name_lower = item.spec.name.strip().lower()
         if name_lower in rmaps["existing_names"]:
             existing_id = rmaps["existing_names"][name_lower]
@@ -519,25 +594,35 @@ def check_duplicates(resolved: list[ResolvedItem], rmaps: dict,
 # ── Plan output ─────────────────────────────────────────────────────────────
 
 def print_plan(resolved: list[ResolvedItem], execute: bool) -> None:
-    """Print what will be created."""
+    """Print what will be done."""
     mode = "EXECUTE" if execute else "DRY RUN"
+    creates = sum(1 for r in resolved if r.spec.action == "create" and not r.skipped)
+    updates = sum(1 for r in resolved if r.spec.action == "update" and not r.skipped)
+    deletes = sum(1 for r in resolved if r.spec.action == "delete" and not r.skipped)
+    skipped = sum(1 for r in resolved if r.skipped)
+
     print(f"\n{'='*60}", file=sys.stderr)
     print(f"  Mode: {mode}", file=sys.stderr)
-    print(f"  Items to create: {sum(1 for r in resolved if not r.skipped)}", file=sys.stderr)
-    print(f"  Items skipped:   {sum(1 for r in resolved if r.skipped)}", file=sys.stderr)
+    print(f"  Create: {creates} | Update: {updates} | Delete: {deletes} | Skipped: {skipped}", file=sys.stderr)
     print(f"{'='*60}\n", file=sys.stderr)
 
     print("Items:", file=sys.stderr)
-    print(f"  {'Ref':<8} {'Name':<40} {'State':<15} {'Priority':<8} {'Parent'}", file=sys.stderr)
-    print(f"  {'-'*8} {'-'*40} {'-'*15} {'-'*8} {'-'*10}", file=sys.stderr)
+    print(f"  {'Action':<8} {'Ref':<16} {'Name':<36} {'State':<15} {'Priority':<8}", file=sys.stderr)
+    print(f"  {'-'*8} {'-'*16} {'-'*36} {'-'*15} {'-'*8}", file=sys.stderr)
 
     for item in resolved:
-        status = "[SKIP] " if item.skipped else ""
-        parent = item.spec.parent_ref or ""
-        name = item.spec.name[:40]
-        state = item.spec.state or "(default)"
-        print(f"  {status}{item.spec.ref:<8} {name:<40} {state:<15} {item.spec.priority:<8} {parent}",
+        skip = "[SKIP] " if item.skipped else ""
+        name = (item.spec.name or "(no change)")[:36]
+        state = item.spec.state or ("" if item.spec.action != "create" else "(default)")
+        priority = item.spec.priority or ""
+        ref = item.spec.existing_id or item.spec.ref
+        print(f"  {skip}{item.spec.action:<8} {ref:<16} {name:<36} {state:<15} {priority:<8}",
               file=sys.stderr)
+
+        # Show what fields will be updated
+        if item.spec.action == "update" and item.api_body:
+            fields = ", ".join(item.api_body.keys())
+            print(f"           Fields: {fields}", file=sys.stderr)
 
     # Relations summary
     total_rels = sum(len(r.relations) for r in resolved if not r.skipped)
@@ -579,61 +664,113 @@ def topological_sort(resolved: list[ResolvedItem]) -> list[ResolvedItem]:
 
 
 def execute(resolved: list[ResolvedItem], verbose: bool) -> None:
-    """Create items in Plane via API."""
+    """Execute create/update/delete operations via Plane API."""
     active = [r for r in resolved if not r.skipped]
-    ordered = topological_sort(active)
+
+    creates = [r for r in active if r.spec.action == "create"]
+    updates = [r for r in active if r.spec.action == "update"]
+    deletes = [r for r in active if r.spec.action == "delete"]
 
     temp_to_uuid: dict[str, str] = {}  # "NEW-1" → created UUID
     created_count = 0
+    updated_count = 0
+    deleted_count = 0
 
-    print(f"\nCreating {len(ordered)} work items...", file=sys.stderr)
+    # ── Deletes first (safest order: delete before create avoids conflicts) ──
+    if deletes:
+        print(f"\nDeleting {len(deletes)} work items...", file=sys.stderr)
+        for item in deletes:
+            if not item.existing_uuid:
+                print(f"  [SKIP] {item.spec.existing_id}: UUID not resolved", file=sys.stderr)
+                continue
 
-    for item in ordered:
-        # Resolve parent if it's a temp ref
-        parent_ref = item.spec.parent_ref.upper() if item.spec.parent_ref else ""
-        if parent_ref.startswith("NEW-") and parent_ref in temp_to_uuid:
-            item.api_body["parent"] = temp_to_uuid[parent_ref]
+            if verbose:
+                print(f"  [DELETE] work-items/{item.existing_uuid}/", file=sys.stderr)
 
-        if verbose:
-            print(f"  [POST] work-items/ {item.api_body}", file=sys.stderr)
+            api_delete(f"work-items/{item.existing_uuid}/", critical=False)
+            deleted_count += 1
+            print(f"  [OK] Deleted {item.spec.existing_id}", file=sys.stderr)
+            time.sleep(0.3)
 
-        result = api_post("work-items/", item.api_body, critical=False)
-        if not result or "id" not in result:
-            print(f"  [FAIL] {item.spec.ref}: {item.spec.name} — {result}", file=sys.stderr)
+    # ── Updates ──────────────────────────────────────────────────────────────
+    if updates:
+        print(f"\nUpdating {len(updates)} work items...", file=sys.stderr)
+        for item in updates:
+            if not item.existing_uuid:
+                print(f"  [SKIP] {item.spec.existing_id}: UUID not resolved", file=sys.stderr)
+                continue
+
+            if verbose:
+                print(f"  [PATCH] work-items/{item.existing_uuid}/ {item.api_body}", file=sys.stderr)
+
+            result = api_patch(f"work-items/{item.existing_uuid}/", item.api_body, critical=False)
+            if result:
+                updated_count += 1
+                print(f"  [OK] Updated {item.spec.existing_id}: {', '.join(item.api_body.keys())}", file=sys.stderr)
+            else:
+                print(f"  [FAIL] {item.spec.existing_id} — {result}", file=sys.stderr)
+            time.sleep(0.3)
+
+    # ── Creates (topologically sorted) ───────────────────────────────────────
+    if creates:
+        ordered = topological_sort(creates)
+        print(f"\nCreating {len(ordered)} work items...", file=sys.stderr)
+
+        for item in ordered:
+            # Resolve parent if it's a temp ref
+            parent_ref = item.spec.parent_ref.upper() if item.spec.parent_ref else ""
+            if parent_ref.startswith("NEW-") and parent_ref in temp_to_uuid:
+                item.api_body["parent"] = temp_to_uuid[parent_ref]
+
+            if verbose:
+                print(f"  [POST] work-items/ {item.api_body}", file=sys.stderr)
+
+            result = api_post("work-items/", item.api_body, critical=False)
+            if not result or "id" not in result:
+                print(f"  [FAIL] {item.spec.ref}: {item.spec.name} — {result}", file=sys.stderr)
+                continue
+
+            item.created_id = result["id"]
+            item.created_seq = result.get("sequence_id")
+            temp_to_uuid[item.spec.ref.upper()] = item.created_id
+            created_count += 1
+            print(f"  [OK] {item.spec.ref} → {item.created_seq}: {item.spec.name}", file=sys.stderr)
+            time.sleep(0.3)
+
+    # ── Post-create: relations, modules, cycles, comments, links ─────────────
+    # Collect all items that have a UUID (created or existing)
+    all_with_uuid = []
+    for r in active:
+        if r.spec.action == "delete":
             continue
-
-        item.created_id = result["id"]
-        item.created_seq = result.get("sequence_id")
-        temp_to_uuid[item.spec.ref.upper()] = item.created_id
-        created_count += 1
-        print(f"  [OK] {item.spec.ref} → {item.created_seq}: {item.spec.name}", file=sys.stderr)
-
-        time.sleep(0.3)
+        item_uuid = r.created_id or r.existing_uuid
+        if item_uuid:
+            all_with_uuid.append((r, item_uuid))
 
     # Relations
     rel_count = 0
-    for item in ordered:
-        if not item.created_id or not item.relations:
+    for item, item_uuid in all_with_uuid:
+        if not item.relations:
             continue
         for rel_type, target_ref in item.relations:
             target_uuid = temp_to_uuid.get(target_ref) if target_ref.startswith("NEW-") else target_ref
             if not target_uuid:
-                print(f"  [SKIP] Relation {item.spec.ref} → {target_ref}: target not created", file=sys.stderr)
+                print(f"  [SKIP] Relation {item.spec.ref} → {target_ref}: target not resolved", file=sys.stderr)
                 continue
 
             body = {"relation_type": rel_type, "issues": [target_uuid]}
             if verbose:
-                print(f"  [POST] work-items/{item.created_id}/relations/ {body}", file=sys.stderr)
+                print(f"  [POST] work-items/{item_uuid}/relations/ {body}", file=sys.stderr)
 
-            api_post(f"work-items/{item.created_id}/relations/", body, critical=False)
+            api_post(f"work-items/{item_uuid}/relations/", body, critical=False)
             rel_count += 1
             time.sleep(0.3)
 
     # Module assignments (batch per module)
     module_batches: dict[str, list[str]] = {}
-    for item in ordered:
-        if item.module_id and item.created_id:
-            module_batches.setdefault(item.module_id, []).append(item.created_id)
+    for item, item_uuid in all_with_uuid:
+        if item.module_id:
+            module_batches.setdefault(item.module_id, []).append(item_uuid)
 
     for mod_id, item_ids in module_batches.items():
         body = {"issues": item_ids}
@@ -644,9 +781,9 @@ def execute(resolved: list[ResolvedItem], verbose: bool) -> None:
 
     # Cycle assignments (batch per cycle)
     cycle_batches: dict[str, list[str]] = {}
-    for item in ordered:
-        if item.cycle_id and item.created_id:
-            cycle_batches.setdefault(item.cycle_id, []).append(item.created_id)
+    for item, item_uuid in all_with_uuid:
+        if item.cycle_id:
+            cycle_batches.setdefault(item.cycle_id, []).append(item_uuid)
 
     for cyc_id, item_ids in cycle_batches.items():
         body = {"issues": item_ids}
@@ -657,45 +794,41 @@ def execute(resolved: list[ResolvedItem], verbose: bool) -> None:
 
     # Comments
     comment_count = 0
-    for item in ordered:
-        if not item.created_id or not item.comments:
+    for item, item_uuid in all_with_uuid:
+        if not item.comments:
             continue
         for comment in item.comments:
             body = {"comment_html": f"<p>{comment}</p>" if not comment.strip().startswith("<") else comment}
             if verbose:
-                print(f"  [POST] work-items/{item.created_id}/comments/", file=sys.stderr)
-            api_post(f"work-items/{item.created_id}/comments/", body, critical=False)
+                print(f"  [POST] work-items/{item_uuid}/comments/", file=sys.stderr)
+            api_post(f"work-items/{item_uuid}/comments/", body, critical=False)
             comment_count += 1
             time.sleep(0.3)
 
     # Links
     link_count = 0
-    for item in ordered:
-        if not item.created_id or not item.links:
+    for item, item_uuid in all_with_uuid:
+        if not item.links:
             continue
         for url in item.links:
             body = {"url": url}
             if verbose:
-                print(f"  [POST] work-items/{item.created_id}/links/", file=sys.stderr)
-            api_post(f"work-items/{item.created_id}/links/", body, critical=False)
+                print(f"  [POST] work-items/{item_uuid}/links/", file=sys.stderr)
+            api_post(f"work-items/{item_uuid}/links/", body, critical=False)
             link_count += 1
             time.sleep(0.3)
 
-    # Summary
+    # ── Summary ──────────────────────────────────────────────────────────────
     print(f"\nDone!", file=sys.stderr)
-    print(f"  Created: {created_count} items", file=sys.stderr)
-    print(f"  Relations: {rel_count}", file=sys.stderr)
-    print(f"  Module assignments: {len(module_batches)}", file=sys.stderr)
-    print(f"  Cycle assignments: {len(cycle_batches)}", file=sys.stderr)
-    print(f"  Comments: {comment_count}", file=sys.stderr)
-    print(f"  Links: {link_count}", file=sys.stderr)
+    print(f"  Created: {created_count} | Updated: {updated_count} | Deleted: {deleted_count}", file=sys.stderr)
+    print(f"  Relations: {rel_count} | Comments: {comment_count} | Links: {link_count}", file=sys.stderr)
+    print(f"  Module assignments: {len(module_batches)} | Cycle assignments: {len(cycle_batches)}", file=sys.stderr)
 
-    # Print created items for reference
     if created_count:
         print(f"\nCreated items:", file=sys.stderr)
-        for item in ordered:
-            if item.created_id:
-                print(f"  {item.spec.ref} → {item.created_seq}: {item.spec.name}", file=sys.stderr)
+        for r in active:
+            if r.created_id:
+                print(f"  {r.spec.ref} → {r.created_seq}: {r.spec.name}", file=sys.stderr)
 
 
 # ── Main ────────────────────────────────────────────────────────────────────
@@ -807,9 +940,15 @@ def main():
         sys.exit(1)
 
     if not args.execute:
-        active = sum(1 for r in resolved if not r.skipped)
-        print(f"\nDry run complete. {active} items would be created.", file=sys.stderr)
-        print("Add --execute to create these items.", file=sys.stderr)
+        creates = sum(1 for r in resolved if r.spec.action == "create" and not r.skipped)
+        updates = sum(1 for r in resolved if r.spec.action == "update" and not r.skipped)
+        deletes = sum(1 for r in resolved if r.spec.action == "delete" and not r.skipped)
+        parts = []
+        if creates: parts.append(f"{creates} created")
+        if updates: parts.append(f"{updates} updated")
+        if deletes: parts.append(f"{deletes} deleted")
+        print(f"\nDry run complete. Would be: {', '.join(parts) or 'nothing'}.", file=sys.stderr)
+        print("Add --execute to apply these changes.", file=sys.stderr)
         return
 
     # Execute
