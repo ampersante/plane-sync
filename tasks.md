@@ -4,8 +4,8 @@
 
 ## Backlog
 
-- [ ] **Write-back Phase 2**: update/delete существующих work items через `plane_write.py`
-- [ ] **Тестирование plane_write.py**: проверить create на реальном проекте (dry-run → execute → verify в Plane UI)
+- [x] **Write-back Phase 2**: update/delete существующих work items через `plane_write.py` (2026-04-22)
+- [x] **Тестирование plane_write.py**: create проверен на TESTPROJEC (items, parent/child, relations, descriptions, comments, links) (2026-04-22)
 - [ ] **Diff между snapshot'ами**: показывать что изменилось с прошлого snapshot
 - [ ] **Оптимизация relations**: сейчас 280 sequential запросов с throttling (~2 мин). Найти способ ускорить (batch endpoint? project-level relations?)
 - [ ] **GitHub repo**: создать remote и запушить

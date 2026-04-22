@@ -12,15 +12,14 @@ Ad hoc инструмент для выгрузки snapshot'ов из Plane (pl
 ## Текущее состояние
 
 - **Read** (`plane_snapshot.py`): работает, протестирован на BigBowls (280 items, 472 relations, 0 warnings).
-- **Write** (`plane_write.py`): Phase 1 реализован — создание work items из MD-файла. Dry-run по умолчанию, `--execute` для создания. Поддержка: items с полями, parent/child, relations, modules, cycles, comments, links. Duplicate detection.
+- **Write** (`plane_write.py`): полный CRUD. Создание, обновление, удаление work items из MD-файла. Dry-run по умолчанию, `--execute` для применения. Поддержка: items с полями, parent/child, relations, modules, cycles, comments, links. Duplicate detection.
 - **Shared API** (`plane_api.py`): общий слой для обоих скриптов (auth, retry, rate limit, profiles, GET/POST/PATCH).
 - Параметрический: через CLI аргументы или `--profile` из `profiles.json`.
 - Rate limit handling: sequential с throttling 0.3s, retry с backoff.
 
 ## На чём остановились
 
-- `plane_write.py` Phase 1 (create) готов, нуждается в тестировании на реальном проекте.
-- Phase 2 (update/delete) не начат.
+- `plane_write.py` полный CRUD протестирован на TESTPROJEC (create, update, delete).
 - GitHub remote ещё не создан.
 
 ## Известные ограничения

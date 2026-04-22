@@ -107,7 +107,10 @@ def _request_with_retry(req: urllib.request.Request, path: str, *,
     for attempt in range(max_retries + 1):
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
-                return json.loads(resp.read().decode())
+                body = resp.read().decode()
+                if not body:
+                    return {}  # e.g. 204 No Content from DELETE
+                return json.loads(body)
         except urllib.error.HTTPError as e:
             if e.code in (401, 403):
                 print(f"Error: Authentication failed (HTTP {e.code}).", file=sys.stderr)
@@ -200,6 +203,15 @@ def api_patch(path: str, body: dict, *,
     data = json.dumps(body).encode()
 
     req = urllib.request.Request(url, data=data, headers=_headers(), method="PATCH")
+    return _request_with_retry(req, path, max_retries=max_retries, critical=critical)
+
+
+def api_delete(path: str, *,
+               max_retries: int = 3, critical: bool = True) -> dict:
+    """DELETE request with retry and error handling."""
+    url = f"{_base_url}/{path.lstrip('/')}"
+
+    req = urllib.request.Request(url, headers=_headers(), method="DELETE")
     return _request_with_retry(req, path, max_retries=max_retries, critical=critical)
 
 
