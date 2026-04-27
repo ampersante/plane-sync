@@ -55,3 +55,15 @@
 **Решение**: колонка Action (create/update/delete) и ID (e.g. TESTPROJEC-401) в таблице Items. Для update пустые ячейки = "не менять". DELETE возвращает пустое тело (204) — обработано в `_request_with_retry`.
 **Почему**: единый формат файла для всех операций. Пользователь ссылается на snapshot и диктует что поменять — Claude генерирует MD с нужными action/ID.
 **Следствие**: полный CRUD в одном файле. Порядок выполнения: delete → update → create (безопасный).
+
+## DEC-010 — Module CRUD через ## Modules секцию (2026-04-27)
+
+**Решение**: добавить секцию `## Modules` в markdown-формат `plane_write.py` для CRUD модулей. Модули идентифицируются по имени (уникальны в проекте), не по sequence_id. Порядок: module CRUD → work item CRUD.
+**Почему**: пользователь хочет создавать модули и назначать на них задачи в одном файле. Модули должны быть созданы ДО резолва work items, чтобы items могли ссылаться на новые модули.
+**Следствие**: pending-placeholder `__pending__<name>` для модулей, которые ещё не созданы — заменяется на UUID после создания. Секция опциональна — обратная совместимость сохранена.
+
+## DEC-011 — Pages: create + read, без update/delete (2026-04-27)
+
+**Решение**: поддержка project pages в обоих скриптах. Snapshot (`--pages` flag) выгружает pages с контентом и иерархией. Write создаёт pages из `## Pages` таблицы + `## Page Contents` секции. Только create — REST API возвращает 405 на PATCH/PUT/DELETE.
+**Почему**: API-ограничение Plane. Pages нужны для документации проекта. Subpages через `parent_id` / `parent_ref`.
+**Следствие**: refs с `NEW-P` prefix (отличаются от work item `NEW-`). Topological sort для parent→child порядка создания. Порядок выполнения: modules → pages → work items.

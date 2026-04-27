@@ -1,7 +1,7 @@
 # Session Handoff
 
 Статус: active
-Обновлено: 2026-04-21
+Обновлено: 2026-04-27
 
 Нулевая точка входа между сессиями. Читать первым делом чтобы понять где остановились.
 
@@ -12,14 +12,15 @@ Ad hoc инструмент для выгрузки snapshot'ов из Plane (pl
 ## Текущее состояние
 
 - **Read** (`plane_snapshot.py`): работает, протестирован на BigBowls (280 items, 472 relations, 0 warnings).
-- **Write** (`plane_write.py`): полный CRUD. Создание, обновление, удаление work items из MD-файла. Dry-run по умолчанию, `--execute` для применения. Поддержка: items с полями, parent/child, relations, modules, cycles, comments, links. Duplicate detection.
+- **Write** (`plane_write.py`): полный CRUD для work items + модулей + create pages. `## Modules`, `## Pages` / `## Page Contents` секции. Pending-placeholder для новых модулей и subpages. Dry-run по умолчанию, `--execute` для применения.
 - **Shared API** (`plane_api.py`): общий слой для обоих скриптов (auth, retry, rate limit, profiles, GET/POST/PATCH).
 - Параметрический: через CLI аргументы или `--profile` из `profiles.json`.
 - Rate limit handling: sequential с throttling 0.3s, retry с backoff.
 
 ## На чём остановились
 
-- `plane_write.py` полный CRUD протестирован на TESTPROJEC (create, update, delete).
+- Module CRUD и Pages (create + read) добавлены и протестированы на TESTPROJEC (2026-04-27).
+- Snapshot поддерживает `--pages` flag для выгрузки pages с контентом и иерархией.
 - GitHub remote ещё не создан.
 
 ## Известные ограничения
