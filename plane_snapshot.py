@@ -30,7 +30,7 @@ from plane_api import (
 
 # ── Data Fetching ────────────────────────────────────────────────────────────
 
-def fetch_all_data(include_descriptions: bool) -> dict:
+def fetch_all_data(include_descriptions: bool, include_pages: bool = False) -> dict:
     """Fetch all project data from Plane API."""
     print("Fetching states...", file=sys.stderr)
     states = api_get_list("states/")
@@ -81,6 +81,22 @@ def fetch_all_data(include_descriptions: bool) -> dict:
 
     print(f"  Got relations for {len(relations)} items", file=sys.stderr)
 
+    # Fetch pages (opt-in, requires N+1 requests for content)
+    pages: list[dict] = []
+    if include_pages:
+        print("Fetching pages...", file=sys.stderr)
+        pages_list = api_get_list("pages/")
+        print(f"  Got {len(pages_list)} pages, fetching content...", file=sys.stderr)
+        for i, page in enumerate(pages_list):
+            page_data = api_get(f"pages/{page['id']}/", max_retries=3, critical=False)
+            if page_data:
+                page_data["parent_id"] = page.get("parent_id")  # merge from list
+                pages.append(page_data)
+            if (i + 1) % 10 == 0:
+                print(f"  Pages: {i + 1}/{len(pages_list)}...", file=sys.stderr)
+            time.sleep(0.3)
+        print(f"  Fetched content for {len(pages)} pages", file=sys.stderr)
+
     return {
         "states": states,
         "labels": labels,
@@ -90,6 +106,7 @@ def fetch_all_data(include_descriptions: bool) -> dict:
         "module_membership": module_membership,
         "relations": relations,
         "include_descriptions": include_descriptions,
+        "pages": pages,
     }
 
 
@@ -202,8 +219,13 @@ def render_markdown(data: dict, maps: dict, warnings: list[str],
     # Header
     lines.append(f"# Plane Snapshot")
     lines.append(f"Generated: {now} | Workspace: {workspace} | Project: {project_id[:8]}... ({id_prefix})")
-    lines.append(f"Items: {len(work_items)} | Relations: {total_relations} | "
-                 f"Modules: {len(data['modules'])} | Warnings: {len(warnings)}")
+    pages = data.get("pages", [])
+    header_parts = [f"Items: {len(work_items)}", f"Relations: {total_relations}",
+                    f"Modules: {len(data['modules'])}"]
+    if pages:
+        header_parts.append(f"Pages: {len(pages)}")
+    header_parts.append(f"Warnings: {len(warnings)}")
+    lines.append(" | ".join(header_parts))
     lines.append("")
 
     # States
@@ -239,6 +261,40 @@ def render_markdown(data: dict, maps: dict, warnings: list[str],
                      f"{m.get('completed_issues', 0)} | {m.get('started_issues', 0)} | "
                      f"{m.get('unstarted_issues', 0)} | {m.get('backlog_issues', 0)} |")
     lines.append("")
+
+    # Pages (opt-in)
+    if pages:
+        lines.append("## Pages")
+        lines.append("")
+
+        # Build parent→children map
+        page_children: dict[str, list[dict]] = {}
+        top_pages: list[dict] = []
+        for page in pages:
+            pid = page.get("parent_id")
+            if pid:
+                page_children.setdefault(pid, []).append(page)
+            else:
+                top_pages.append(page)
+
+        def _render_page(page: dict, level: int = 3) -> None:
+            heading = "#" * min(level, 6)
+            lines.append(f"{heading} {_esc(page['name'])}")
+            owner = maps["member"].get(page.get("owned_by", ""), page.get("owned_by", "?")[:8])
+            raw_access = page.get("access")
+            access = "public" if raw_access == 0 or raw_access is None else f"access={raw_access}"
+            updated = page.get("updated_at", "")[:10]
+            lines.append(f"Owner: {owner} | Access: {access} | Updated: {updated}")
+            lines.append("")
+            content = page.get("description_html", "") or ""
+            if content and content != "<p></p>":
+                lines.append(content)
+                lines.append("")
+            for child in sorted(page_children.get(page["id"], []), key=lambda p: p["name"]):
+                _render_page(child, level + 1)
+
+        for page in sorted(top_pages, key=lambda p: p["name"]):
+            _render_page(page)
 
     # Work Items — split into top-level and children
     item_ids = {item["id"] for item in work_items}
@@ -359,6 +415,8 @@ def main():
                         help="Work item ID prefix (e.g. CT). Auto-detected if omitted.")
     parser.add_argument("--descriptions", action="store_true",
                         help="Include work item descriptions in output")
+    parser.add_argument("--pages", action="store_true",
+                        help="Include project pages with content in output")
     parser.add_argument("-o", "--output", type=Path, default=None,
                         help="Output file path (default: ./snapshot.md)")
     parser.add_argument("--env", type=Path, default=None,
@@ -408,7 +466,7 @@ def main():
     print(f"  Output:    {args.output}", file=sys.stderr)
     print("", file=sys.stderr)
 
-    data = fetch_all_data(args.descriptions)
+    data = fetch_all_data(args.descriptions, args.pages)
 
     # Auto-detect prefix from project identifier if not given
     if not id_prefix:
@@ -436,9 +494,12 @@ def main():
     args.output.write_text(md, encoding="utf-8")
 
     print(f"Done! Snapshot saved to {args.output}", file=sys.stderr)
-    print(f"  {len(data['work_items'])} items, "
-          f"{len(data['modules'])} modules, "
-          f"{len(warnings)} warnings", file=sys.stderr)
+    parts = [f"{len(data['work_items'])} items",
+             f"{len(data['modules'])} modules"]
+    if data.get("pages"):
+        parts.append(f"{len(data['pages'])} pages")
+    parts.append(f"{len(warnings)} warnings")
+    print(f"  {', '.join(parts)}", file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -52,6 +52,56 @@ class WorkItemSpec:
 
 
 @dataclass
+class ModuleSpec:
+    """Parsed from markdown ## Modules table."""
+    action: str = "create"                          # "create", "update", "delete"
+    existing_name: str = ""                         # current module name for update/delete
+    name: str = ""                                  # new name (create) or rename (update)
+    description: str = ""
+    start_date: str = ""                            # YYYY-MM-DD
+    target_date: str = ""                           # YYYY-MM-DD
+    status: str = ""                                # backlog/planned/in-progress/paused/completed/cancelled
+    lead: str = ""                                  # display_name (human)
+    members: list[str] = field(default_factory=list)  # display_names (human)
+    line_number: int = 0
+
+
+@dataclass
+class ResolvedModule:
+    """Ready for API call (POST/PATCH/DELETE) on a module."""
+    spec: ModuleSpec
+    api_body: dict = field(default_factory=dict)
+    existing_uuid: str | None = None
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    created_id: str | None = None
+    skipped: bool = False
+
+
+@dataclass
+class PageSpec:
+    """Parsed from markdown ## Pages table. Create-only (API limitation)."""
+    ref: str = ""                                      # "NEW-P1" auto-generated
+    name: str = ""
+    access: int = 0                                    # 0 = public
+    parent_ref: str = ""                               # "NEW-P1" for subpages
+    description_html: str = ""                         # content from ## Page Contents
+    line_number: int = 0
+
+
+@dataclass
+class ResolvedPage:
+    """Ready for API call (POST) on a page."""
+    spec: PageSpec
+    api_body: dict = field(default_factory=dict)
+    parent_uuid: str | None = None
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    created_id: str | None = None
+    skipped: bool = False
+
+
+@dataclass
 class ResolvedItem:
     """Ready for API call (POST/PATCH/DELETE)."""
     spec: WorkItemSpec
@@ -284,6 +334,103 @@ def parse_items_table(section_text: str, section_start: int) -> list[WorkItemSpe
     return specs
 
 
+VALID_MODULE_STATUSES = {"backlog", "planned", "in-progress", "paused", "completed", "cancelled"}
+
+
+def parse_modules_table(section_text: str, section_start: int) -> list[ModuleSpec]:
+    """Parse ## Modules section into ModuleSpec list."""
+    headers, rows = _parse_table(section_text)
+    if not headers:
+        print("Error: No table found in ## Modules section.", file=sys.stderr)
+        sys.exit(1)
+
+    col = {h: i for i, h in enumerate(headers)}
+    specs: list[ModuleSpec] = []
+
+    for cells, line_off in rows:
+        while len(cells) < len(headers):
+            cells.append("")
+
+        action = cells[col.get("action", -1)].strip().lower() if "action" in col else "create"
+        if action not in ("create", "update", "delete"):
+            action = "create"
+
+        existing_name = _unesc(cells[col.get("id", -1)]).strip() if "id" in col else ""
+        name = _unesc(cells[col.get("name", -1)]).strip() if "name" in col else ""
+
+        # For delete, need at least existing_name
+        if action == "delete" and not existing_name:
+            continue
+        # For create, need name
+        if action == "create" and not name:
+            continue
+
+        status = cells[col.get("status", -1)].strip().lower() if "status" in col else ""
+        if status and status not in VALID_MODULE_STATUSES:
+            status = ""
+
+        members_str = cells[col.get("members", -1)].strip() if "members" in col else ""
+        members = [m.strip() for m in members_str.split(",") if m.strip()] if members_str else []
+
+        spec = ModuleSpec(
+            action=action,
+            existing_name=existing_name,
+            name=name,
+            description=_unesc(cells[col.get("description", -1)]).strip() if "description" in col else "",
+            start_date=cells[col.get("start", -1)].strip() if "start" in col else "",
+            target_date=cells[col.get("end", -1)].strip() if "end" in col else "",
+            status=status,
+            lead=cells[col.get("lead", -1)].strip() if "lead" in col else "",
+            members=members,
+            line_number=section_start + line_off,
+        )
+        specs.append(spec)
+
+    return specs
+
+
+def parse_pages_table(section_text: str, section_start: int) -> list[PageSpec]:
+    """Parse ## Pages section into PageSpec list."""
+    headers, rows = _parse_table(section_text)
+    if not headers:
+        print("Error: No table found in ## Pages section.", file=sys.stderr)
+        sys.exit(1)
+
+    col = {h: i for i, h in enumerate(headers)}
+    specs: list[PageSpec] = []
+    auto_ref = 0
+
+    for cells, line_off in rows:
+        while len(cells) < len(headers):
+            cells.append("")
+
+        name = _unesc(cells[col.get("name", -1)]).strip() if "name" in col else ""
+        if not name:
+            continue
+
+        auto_ref += 1
+        ref = cells[col.get("ref", -1)].strip().upper() if "ref" in col else ""
+        if not ref:
+            ref = f"NEW-P{auto_ref}"
+
+        access_str = cells[col.get("access", -1)].strip() if "access" in col else ""
+        try:
+            access = int(access_str) if access_str else 0
+        except ValueError:
+            access = 0
+
+        spec = PageSpec(
+            ref=ref,
+            name=name,
+            access=access,
+            parent_ref=cells[col.get("parent", -1)].strip() if "parent" in col else "",
+            line_number=section_start + line_off,
+        )
+        specs.append(spec)
+
+    return specs
+
+
 def parse_relations(section_text: str, specs: list[WorkItemSpec]) -> None:
     """Parse ## Relations table and attach to matching specs."""
     headers, rows = _parse_table(section_text)
@@ -332,18 +479,37 @@ def parse_subsections(section_text: str) -> dict[str, str]:
     return result
 
 
-def parse_input(md_text: str) -> list[WorkItemSpec]:
-    """Parse markdown input file into list of WorkItemSpec."""
+def parse_input(md_text: str) -> tuple[list[WorkItemSpec], list[ModuleSpec], list[PageSpec]]:
+    """Parse markdown input file into work item specs, module specs, and page specs."""
     sections = _split_sections(md_text)
 
-    if "items" not in sections:
-        print("Error: ## Items section not found in input file.", file=sys.stderr)
+    has_items = "items" in sections
+    has_modules = "modules" in sections
+    has_pages = "pages" in sections
+
+    if not has_items and not has_modules and not has_pages:
+        print("Error: Need at least ## Items, ## Modules, or ## Pages section in input file.", file=sys.stderr)
         sys.exit(1)
 
-    items_text, items_start = sections["items"]
-    specs = parse_items_table(items_text, items_start)
+    # Parse modules
+    module_specs: list[ModuleSpec] = []
+    if has_modules:
+        mod_text, mod_start = sections["modules"]
+        module_specs = parse_modules_table(mod_text, mod_start)
 
-    if not specs:
+    # Parse pages
+    page_specs: list[PageSpec] = []
+    if has_pages:
+        page_text, page_start = sections["pages"]
+        page_specs = parse_pages_table(page_text, page_start)
+
+    # Parse items
+    specs: list[WorkItemSpec] = []
+    if has_items:
+        items_text, items_start = sections["items"]
+        specs = parse_items_table(items_text, items_start)
+
+    if has_items and not specs and not module_specs and not page_specs:
         print("Error: No items found in ## Items table.", file=sys.stderr)
         sys.exit(1)
 
@@ -377,7 +543,16 @@ def parse_input(md_text: str) -> list[WorkItemSpec]:
                     if url and (url.startswith("http://") or url.startswith("https://")):
                         ref_map[ref].links.append(url)
 
-    return specs
+    # Page contents
+    if "page contents" in sections:
+        page_ref_map = {s.ref.upper(): s for s in page_specs}
+        for ref, content in parse_subsections(sections["page contents"][0]).items():
+            if ref in page_ref_map:
+                if not content.strip().startswith("<"):
+                    content = f"<p>{content}</p>"
+                page_ref_map[ref].description_html = content
+
+    return specs, module_specs, page_specs
 
 
 # ── Resolution ──────────────────────────────────────────────────────────────
@@ -390,7 +565,8 @@ def _resolve_existing_id(spec: WorkItemSpec, rmaps: dict) -> str | None:
     return rmaps["existing_item"].get(key)
 
 
-def resolve_all(specs: list[WorkItemSpec], rmaps: dict) -> list[ResolvedItem]:
+def resolve_all(specs: list[WorkItemSpec], rmaps: dict,
+                new_module_names: set[str] | None = None) -> list[ResolvedItem]:
     """Resolve human-readable names to UUIDs."""
     resolved: list[ResolvedItem] = []
     new_refs = {s.ref.upper() for s in specs if s.action == "create"}
@@ -481,9 +657,12 @@ def resolve_all(specs: list[WorkItemSpec], rmaps: dict) -> list[ResolvedItem]:
 
         # Module
         if spec.module:
-            mod_id = rmaps["module"].get(spec.module.strip().lower())
+            mod_key = spec.module.strip().lower()
+            mod_id = rmaps["module"].get(mod_key)
             if mod_id:
                 item.module_id = mod_id
+            elif new_module_names and mod_key in new_module_names:
+                item.module_id = f"__pending__{mod_key}"
             else:
                 item.errors.append(f"Unknown module '{spec.module}'")
 
@@ -513,6 +692,186 @@ def resolve_all(specs: list[WorkItemSpec], rmaps: dict) -> list[ResolvedItem]:
         resolved.append(item)
 
     return resolved
+
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def resolve_all_modules(module_specs: list[ModuleSpec], rmaps: dict) -> list[ResolvedModule]:
+    """Resolve module specs to API-ready form."""
+    resolved: list[ResolvedModule] = []
+
+    for spec in module_specs:
+        item = ResolvedModule(spec=spec)
+
+        # Resolve existing module for update/delete
+        if spec.action in ("update", "delete"):
+            if spec.existing_name:
+                key = spec.existing_name.strip().lower()
+                uuid = rmaps["module"].get(key)
+                if uuid:
+                    item.existing_uuid = uuid
+                else:
+                    item.errors.append(f"Unknown module '{spec.existing_name}'")
+            else:
+                item.errors.append(f"{spec.action} requires ID column (module name)")
+
+        if spec.action == "delete":
+            resolved.append(item)
+            continue
+
+        body: dict = {}
+        is_update = spec.action == "update"
+
+        if spec.name:
+            body["name"] = spec.name
+        elif not is_update:
+            item.errors.append("Module name is required for create")
+
+        if spec.description:
+            body["description"] = spec.description
+
+        if spec.status:
+            if spec.status in VALID_MODULE_STATUSES:
+                body["status"] = spec.status
+            else:
+                item.errors.append(f"Invalid module status '{spec.status}'")
+
+        if spec.start_date:
+            if _DATE_RE.match(spec.start_date):
+                body["start_date"] = spec.start_date
+            else:
+                item.errors.append(f"Invalid start date '{spec.start_date}' (expected YYYY-MM-DD)")
+
+        if spec.target_date:
+            if _DATE_RE.match(spec.target_date):
+                body["target_date"] = spec.target_date
+            else:
+                item.errors.append(f"Invalid end date '{spec.target_date}' (expected YYYY-MM-DD)")
+
+        if spec.lead:
+            lead_id = rmaps["member"].get(spec.lead.strip().lower())
+            if lead_id:
+                body["lead"] = lead_id
+            else:
+                item.errors.append(f"Unknown member '{spec.lead}' (lead)")
+
+        if spec.members:
+            member_ids = []
+            for m in spec.members:
+                m_id = rmaps["member"].get(m.strip().lower())
+                if m_id:
+                    member_ids.append(m_id)
+                else:
+                    item.errors.append(f"Unknown member '{m}'")
+            if member_ids:
+                body["members"] = member_ids
+
+        item.api_body = body
+        resolved.append(item)
+
+    return resolved
+
+
+def validate_modules(resolved_modules: list[ResolvedModule],
+                     rmaps: dict) -> tuple[list[str], list[str]]:
+    """Validate resolved modules. Returns (fatal_errors, warnings)."""
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    # Duplicate names among creates
+    names = [r.spec.name.strip().lower() for r in resolved_modules if r.spec.action == "create" and r.spec.name]
+    seen: set[str] = set()
+    for name in names:
+        if name in seen:
+            errors.append(f"Duplicate module name '{name}'")
+        seen.add(name)
+
+    # update must have fields to change
+    for item in resolved_modules:
+        if item.spec.action == "update" and not item.api_body:
+            errors.append(f"Module update '{item.spec.existing_name}' has no fields to change")
+
+    # Per-item errors
+    for item in resolved_modules:
+        for err in item.errors:
+            label = item.spec.existing_name or item.spec.name or "?"
+            errors.append(f"[module:{label}] {err}")
+
+    # Warn if creating a module that already exists
+    for item in resolved_modules:
+        if item.spec.action == "create" and item.spec.name:
+            if item.spec.name.strip().lower() in rmaps["module"]:
+                warnings.append(f"Module '{item.spec.name}' already exists — creating will fail or duplicate")
+
+    return errors, warnings
+
+
+def resolve_all_pages(page_specs: list[PageSpec]) -> list[ResolvedPage]:
+    """Resolve page specs to API-ready form. Create-only."""
+    resolved: list[ResolvedPage] = []
+    page_refs = {s.ref.upper() for s in page_specs}
+
+    for spec in page_specs:
+        item = ResolvedPage(spec=spec)
+        body: dict = {"name": spec.name, "description_html": spec.description_html or "<p></p>"}
+
+        if spec.access:
+            body["access"] = spec.access
+
+        if spec.parent_ref:
+            parent_upper = spec.parent_ref.strip().upper()
+            if parent_upper in page_refs:
+                item.parent_uuid = parent_upper  # placeholder, resolved at execute time
+            else:
+                item.errors.append(f"Unknown parent page '{spec.parent_ref}'")
+
+        item.api_body = body
+        resolved.append(item)
+
+    return resolved
+
+
+def validate_pages(resolved_pages: list[ResolvedPage]) -> tuple[list[str], list[str]]:
+    """Validate resolved pages. Returns (fatal_errors, warnings)."""
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    # Duplicate refs
+    refs = [r.spec.ref.upper() for r in resolved_pages]
+    seen: set[str] = set()
+    for ref in refs:
+        if ref in seen:
+            errors.append(f"Duplicate page ref '{ref}'")
+        seen.add(ref)
+
+    # Circular parent chains
+    ref_to_parent: dict[str, str] = {}
+    for item in resolved_pages:
+        if item.spec.parent_ref:
+            ref_to_parent[item.spec.ref.upper()] = item.spec.parent_ref.strip().upper()
+
+    for ref in ref_to_parent:
+        visited: set[str] = set()
+        current = ref
+        while current in ref_to_parent:
+            if current in visited:
+                errors.append(f"Circular parent chain in pages involving '{ref}'")
+                break
+            visited.add(current)
+            current = ref_to_parent[current]
+
+    # Per-item errors
+    for item in resolved_pages:
+        for err in item.errors:
+            errors.append(f"[page:{item.spec.ref}] {err}")
+
+    # Warnings
+    for item in resolved_pages:
+        if not item.spec.description_html:
+            warnings.append(f"[page:{item.spec.ref}] No content — page will be empty")
+
+    return errors, warnings
 
 
 # ── Validation ──────────────────────────────────────────────────────────────
@@ -593,9 +952,19 @@ def check_duplicates(resolved: list[ResolvedItem], rmaps: dict,
 
 # ── Plan output ─────────────────────────────────────────────────────────────
 
-def print_plan(resolved: list[ResolvedItem], execute: bool) -> None:
+def print_plan(resolved: list[ResolvedItem],
+               resolved_modules: list[ResolvedModule],
+               resolved_pages: list[ResolvedPage],
+               execute: bool) -> None:
     """Print what will be done."""
     mode = "EXECUTE" if execute else "DRY RUN"
+
+    mod_creates = sum(1 for r in resolved_modules if r.spec.action == "create" and not r.skipped)
+    mod_updates = sum(1 for r in resolved_modules if r.spec.action == "update" and not r.skipped)
+    mod_deletes = sum(1 for r in resolved_modules if r.spec.action == "delete" and not r.skipped)
+
+    page_creates = sum(1 for r in resolved_pages if not r.skipped)
+
     creates = sum(1 for r in resolved if r.spec.action == "create" and not r.skipped)
     updates = sum(1 for r in resolved if r.spec.action == "update" and not r.skipped)
     deletes = sum(1 for r in resolved if r.spec.action == "delete" and not r.skipped)
@@ -603,26 +972,63 @@ def print_plan(resolved: list[ResolvedItem], execute: bool) -> None:
 
     print(f"\n{'='*60}", file=sys.stderr)
     print(f"  Mode: {mode}", file=sys.stderr)
-    print(f"  Create: {creates} | Update: {updates} | Delete: {deletes} | Skipped: {skipped}", file=sys.stderr)
+    if resolved_modules:
+        print(f"  Modules — Create: {mod_creates} | Update: {mod_updates} | Delete: {mod_deletes}", file=sys.stderr)
+    if resolved_pages:
+        print(f"  Pages   — Create: {page_creates}", file=sys.stderr)
+    if resolved:
+        print(f"  Items   — Create: {creates} | Update: {updates} | Delete: {deletes} | Skipped: {skipped}", file=sys.stderr)
     print(f"{'='*60}\n", file=sys.stderr)
 
-    print("Items:", file=sys.stderr)
-    print(f"  {'Action':<8} {'Ref':<16} {'Name':<36} {'State':<15} {'Priority':<8}", file=sys.stderr)
-    print(f"  {'-'*8} {'-'*16} {'-'*36} {'-'*15} {'-'*8}", file=sys.stderr)
+    # Modules
+    if resolved_modules:
+        print("Modules:", file=sys.stderr)
+        print(f"  {'Action':<8} {'ID/Name':<36} {'Status':<15} {'Lead':<12}", file=sys.stderr)
+        print(f"  {'-'*8} {'-'*36} {'-'*15} {'-'*12}", file=sys.stderr)
 
-    for item in resolved:
-        skip = "[SKIP] " if item.skipped else ""
-        name = (item.spec.name or "(no change)")[:36]
-        state = item.spec.state or ("" if item.spec.action != "create" else "(default)")
-        priority = item.spec.priority or ""
-        ref = item.spec.existing_id or item.spec.ref
-        print(f"  {skip}{item.spec.action:<8} {ref:<16} {name:<36} {state:<15} {priority:<8}",
-              file=sys.stderr)
+        for item in resolved_modules:
+            label = item.spec.existing_name or item.spec.name
+            label = label[:36]
+            status = item.spec.status or ""
+            lead = item.spec.lead or ""
+            print(f"  {item.spec.action:<8} {label:<36} {status:<15} {lead:<12}", file=sys.stderr)
 
-        # Show what fields will be updated
-        if item.spec.action == "update" and item.api_body:
-            fields = ", ".join(item.api_body.keys())
-            print(f"           Fields: {fields}", file=sys.stderr)
+            if item.spec.action == "update" and item.api_body:
+                fields = ", ".join(item.api_body.keys())
+                print(f"           Fields: {fields}", file=sys.stderr)
+        print("", file=sys.stderr)
+
+    # Pages
+    if resolved_pages:
+        print("Pages:", file=sys.stderr)
+        print(f"  {'Ref':<12} {'Name':<40} {'Parent':<12}", file=sys.stderr)
+        print(f"  {'-'*12} {'-'*40} {'-'*12}", file=sys.stderr)
+
+        for item in resolved_pages:
+            name = item.spec.name[:40]
+            parent = item.spec.parent_ref or ""
+            has_content = "yes" if item.spec.description_html else "no"
+            print(f"  {item.spec.ref:<12} {name:<40} {parent:<12}", file=sys.stderr)
+        print("", file=sys.stderr)
+
+    # Items
+    if resolved:
+        print("Items:", file=sys.stderr)
+        print(f"  {'Action':<8} {'Ref':<16} {'Name':<36} {'State':<15} {'Priority':<8}", file=sys.stderr)
+        print(f"  {'-'*8} {'-'*16} {'-'*36} {'-'*15} {'-'*8}", file=sys.stderr)
+
+        for item in resolved:
+            skip = "[SKIP] " if item.skipped else ""
+            name = (item.spec.name or "(no change)")[:36]
+            state = item.spec.state or ("" if item.spec.action != "create" else "(default)")
+            priority = item.spec.priority or ""
+            ref = item.spec.existing_id or item.spec.ref
+            print(f"  {skip}{item.spec.action:<8} {ref:<16} {name:<36} {state:<15} {priority:<8}",
+                  file=sys.stderr)
+
+            if item.spec.action == "update" and item.api_body:
+                fields = ", ".join(item.api_body.keys())
+                print(f"           Fields: {fields}", file=sys.stderr)
 
     # Relations summary
     total_rels = sum(len(r.relations) for r in resolved if not r.skipped)
@@ -631,9 +1037,10 @@ def print_plan(resolved: list[ResolvedItem], execute: bool) -> None:
     modules = sum(1 for r in resolved if r.module_id and not r.skipped)
     cycles = sum(1 for r in resolved if r.cycle_id and not r.skipped)
 
-    print(f"\n  Relations: {total_rels} | Comments: {total_comments} | "
-          f"Links: {total_links} | Module assignments: {modules} | "
-          f"Cycle assignments: {cycles}", file=sys.stderr)
+    if resolved:
+        print(f"\n  Relations: {total_rels} | Comments: {total_comments} | "
+              f"Links: {total_links} | Module assignments: {modules} | "
+              f"Cycle assignments: {cycles}", file=sys.stderr)
 
 
 # ── Execution ───────────────────────────────────────────────────────────────
@@ -663,8 +1070,121 @@ def topological_sort(resolved: list[ResolvedItem]) -> list[ResolvedItem]:
     return order
 
 
-def execute(resolved: list[ResolvedItem], verbose: bool) -> None:
-    """Execute create/update/delete operations via Plane API."""
+def topological_sort_pages(resolved: list[ResolvedPage]) -> list[ResolvedPage]:
+    """Sort pages so parents come before children."""
+    ref_map = {r.spec.ref.upper(): r for r in resolved}
+    visited: set[str] = set()
+    order: list[ResolvedPage] = []
+
+    def visit(ref: str):
+        if ref in visited:
+            return
+        visited.add(ref)
+        item = ref_map.get(ref)
+        if not item:
+            return
+        parent_ref = item.spec.parent_ref.upper() if item.spec.parent_ref else ""
+        if parent_ref.startswith("NEW-P") and parent_ref in ref_map:
+            visit(parent_ref)
+        order.append(item)
+
+    for r in resolved:
+        visit(r.spec.ref.upper())
+
+    return order
+
+
+def execute(resolved: list[ResolvedItem],
+            resolved_modules: list[ResolvedModule],
+            resolved_pages: list[ResolvedPage],
+            verbose: bool) -> None:
+    """Execute module + page + work item operations via Plane API."""
+
+    # ── Module CRUD (before work items) ─────────────────────────────────────
+    created_modules: dict[str, str] = {}  # name.lower() → created UUID
+    mod_active = [r for r in resolved_modules if not r.skipped]
+
+    mod_deletes = [r for r in mod_active if r.spec.action == "delete"]
+    mod_updates = [r for r in mod_active if r.spec.action == "update"]
+    mod_creates = [r for r in mod_active if r.spec.action == "create"]
+
+    mod_deleted_count = 0
+    mod_updated_count = 0
+    mod_created_count = 0
+
+    if mod_deletes:
+        print(f"\nDeleting {len(mod_deletes)} modules...", file=sys.stderr)
+        for item in mod_deletes:
+            if not item.existing_uuid:
+                print(f"  [SKIP] Module '{item.spec.existing_name}': UUID not resolved", file=sys.stderr)
+                continue
+            if verbose:
+                print(f"  [DELETE] modules/{item.existing_uuid}/", file=sys.stderr)
+            api_delete(f"modules/{item.existing_uuid}/", critical=False)
+            mod_deleted_count += 1
+            print(f"  [OK] Deleted module '{item.spec.existing_name}'", file=sys.stderr)
+            time.sleep(0.3)
+
+    if mod_updates:
+        print(f"\nUpdating {len(mod_updates)} modules...", file=sys.stderr)
+        for item in mod_updates:
+            if not item.existing_uuid:
+                print(f"  [SKIP] Module '{item.spec.existing_name}': UUID not resolved", file=sys.stderr)
+                continue
+            if verbose:
+                print(f"  [PATCH] modules/{item.existing_uuid}/ {item.api_body}", file=sys.stderr)
+            result = api_patch(f"modules/{item.existing_uuid}/", item.api_body, critical=False)
+            if result:
+                mod_updated_count += 1
+                print(f"  [OK] Updated module '{item.spec.existing_name}': {', '.join(item.api_body.keys())}", file=sys.stderr)
+            else:
+                print(f"  [FAIL] Module '{item.spec.existing_name}' — {result}", file=sys.stderr)
+            time.sleep(0.3)
+
+    if mod_creates:
+        print(f"\nCreating {len(mod_creates)} modules...", file=sys.stderr)
+        for item in mod_creates:
+            if verbose:
+                print(f"  [POST] modules/ {item.api_body}", file=sys.stderr)
+            result = api_post("modules/", item.api_body, critical=False)
+            if not result or "id" not in result:
+                print(f"  [FAIL] Module '{item.spec.name}' — {result}", file=sys.stderr)
+                continue
+            item.created_id = result["id"]
+            created_modules[item.spec.name.strip().lower()] = item.created_id
+            mod_created_count += 1
+            print(f"  [OK] Created module '{item.spec.name}'", file=sys.stderr)
+            time.sleep(0.3)
+
+    # ── Page creation (after modules, before work items) ──────────────────
+    page_active = [r for r in resolved_pages if not r.skipped]
+    page_created_count = 0
+    temp_page_to_uuid: dict[str, str] = {}  # "NEW-P1" → created UUID
+
+    if page_active:
+        ordered_pages = topological_sort_pages(page_active)
+        print(f"\nCreating {len(ordered_pages)} pages...", file=sys.stderr)
+
+        for item in ordered_pages:
+            parent_ref = item.spec.parent_ref.upper() if item.spec.parent_ref else ""
+            if parent_ref.startswith("NEW-P") and parent_ref in temp_page_to_uuid:
+                item.api_body["parent_id"] = temp_page_to_uuid[parent_ref]
+
+            if verbose:
+                print(f"  [POST] pages/ {item.api_body}", file=sys.stderr)
+
+            result = api_post("pages/", item.api_body, critical=False)
+            if not result or "id" not in result:
+                print(f"  [FAIL] Page '{item.spec.name}' — {result}", file=sys.stderr)
+                continue
+
+            item.created_id = result["id"]
+            temp_page_to_uuid[item.spec.ref.upper()] = item.created_id
+            page_created_count += 1
+            print(f"  [OK] Created page '{item.spec.name}'", file=sys.stderr)
+            time.sleep(0.3)
+
+    # ── Work item CRUD ──────────────────────────────────────────────────────
     active = [r for r in resolved if not r.skipped]
 
     creates = [r for r in active if r.spec.action == "create"]
@@ -766,11 +1286,18 @@ def execute(resolved: list[ResolvedItem], verbose: bool) -> None:
             rel_count += 1
             time.sleep(0.3)
 
-    # Module assignments (batch per module)
+    # Module assignments (batch per module, resolve pending placeholders)
     module_batches: dict[str, list[str]] = {}
     for item, item_uuid in all_with_uuid:
         if item.module_id:
-            module_batches.setdefault(item.module_id, []).append(item_uuid)
+            mod_id = item.module_id
+            if mod_id.startswith("__pending__"):
+                pending_name = mod_id[len("__pending__"):]
+                mod_id = created_modules.get(pending_name, "")
+                if not mod_id:
+                    print(f"  [SKIP] Module assignment for {item.spec.ref}: pending module '{pending_name}' was not created", file=sys.stderr)
+                    continue
+            module_batches.setdefault(mod_id, []).append(item_uuid)
 
     for mod_id, item_ids in module_batches.items():
         body = {"issues": item_ids}
@@ -820,9 +1347,25 @@ def execute(resolved: list[ResolvedItem], verbose: bool) -> None:
 
     # ── Summary ──────────────────────────────────────────────────────────────
     print(f"\nDone!", file=sys.stderr)
-    print(f"  Created: {created_count} | Updated: {updated_count} | Deleted: {deleted_count}", file=sys.stderr)
+    if mod_active:
+        print(f"  Modules  — Created: {mod_created_count} | Updated: {mod_updated_count} | Deleted: {mod_deleted_count}", file=sys.stderr)
+    if page_active:
+        print(f"  Pages    — Created: {page_created_count}", file=sys.stderr)
+    print(f"  Items    — Created: {created_count} | Updated: {updated_count} | Deleted: {deleted_count}", file=sys.stderr)
     print(f"  Relations: {rel_count} | Comments: {comment_count} | Links: {link_count}", file=sys.stderr)
     print(f"  Module assignments: {len(module_batches)} | Cycle assignments: {len(cycle_batches)}", file=sys.stderr)
+
+    if mod_created_count:
+        print(f"\nCreated modules:", file=sys.stderr)
+        for r in mod_active:
+            if r.created_id:
+                print(f"  '{r.spec.name}'", file=sys.stderr)
+
+    if page_created_count:
+        print(f"\nCreated pages:", file=sys.stderr)
+        for r in page_active:
+            if r.created_id:
+                print(f"  '{r.spec.name}'", file=sys.stderr)
 
     if created_count:
         print(f"\nCreated items:", file=sys.stderr)
@@ -902,8 +1445,15 @@ def main():
 
     # Parse input
     md_text = input_path.read_text(encoding="utf-8")
-    specs = parse_input(md_text)
-    print(f"Parsed {len(specs)} items from input file", file=sys.stderr)
+    item_specs, module_specs, page_specs = parse_input(md_text)
+    parts_parsed = []
+    if item_specs:
+        parts_parsed.append(f"{len(item_specs)} items")
+    if module_specs:
+        parts_parsed.append(f"{len(module_specs)} modules")
+    if page_specs:
+        parts_parsed.append(f"{len(page_specs)} pages")
+    print(f"Parsed {', '.join(parts_parsed)} from input file", file=sys.stderr)
 
     # Fetch lookups and resolve
     lookups = fetch_lookups()
@@ -911,16 +1461,31 @@ def main():
     print(f"  Project prefix: {id_prefix}", file=sys.stderr)
 
     rmaps = build_reverse_maps(lookups, id_prefix)
-    resolved = resolve_all(specs, rmaps)
 
-    # Validate
-    errors, warnings = validate(resolved)
+    # Resolve modules
+    resolved_modules = resolve_all_modules(module_specs, rmaps)
+    mod_errors, mod_warnings = validate_modules(resolved_modules, rmaps)
 
-    # Duplicate check
+    # Resolve pages
+    resolved_pages = resolve_all_pages(page_specs)
+    page_errors, page_warnings = validate_pages(resolved_pages)
+
+    # Resolve items (with pending module names from ## Modules creates)
+    new_module_names = {s.name.strip().lower() for s in module_specs if s.action == "create" and s.name}
+    resolved = resolve_all(item_specs, rmaps, new_module_names or None)
+
+    # Validate items
+    item_errors, item_warnings = validate(resolved)
+
+    # Merge errors/warnings
+    errors = mod_errors + page_errors + item_errors
+    warnings = mod_warnings + page_warnings + item_warnings
+
+    # Duplicate check (items only)
     dup_messages = check_duplicates(resolved, rmaps, args.allow_duplicates)
 
     # Print plan
-    print_plan(resolved, args.execute)
+    print_plan(resolved, resolved_modules, resolved_pages, args.execute)
 
     if dup_messages:
         print(f"\nDuplicate detection:", file=sys.stderr)
@@ -940,19 +1505,27 @@ def main():
         sys.exit(1)
 
     if not args.execute:
+        parts = []
+        mc = sum(1 for r in resolved_modules if r.spec.action == "create" and not r.skipped)
+        mu = sum(1 for r in resolved_modules if r.spec.action == "update" and not r.skipped)
+        md_count = sum(1 for r in resolved_modules if r.spec.action == "delete" and not r.skipped)
+        if mc: parts.append(f"{mc} modules created")
+        if mu: parts.append(f"{mu} modules updated")
+        if md_count: parts.append(f"{md_count} modules deleted")
+        pc = sum(1 for r in resolved_pages if not r.skipped)
+        if pc: parts.append(f"{pc} pages created")
         creates = sum(1 for r in resolved if r.spec.action == "create" and not r.skipped)
         updates = sum(1 for r in resolved if r.spec.action == "update" and not r.skipped)
         deletes = sum(1 for r in resolved if r.spec.action == "delete" and not r.skipped)
-        parts = []
-        if creates: parts.append(f"{creates} created")
-        if updates: parts.append(f"{updates} updated")
-        if deletes: parts.append(f"{deletes} deleted")
+        if creates: parts.append(f"{creates} items created")
+        if updates: parts.append(f"{updates} items updated")
+        if deletes: parts.append(f"{deletes} items deleted")
         print(f"\nDry run complete. Would be: {', '.join(parts) or 'nothing'}.", file=sys.stderr)
         print("Add --execute to apply these changes.", file=sys.stderr)
         return
 
-    # Execute
-    execute(resolved, args.verbose)
+    # Execute (modules → pages → items)
+    execute(resolved, resolved_modules, resolved_pages, args.verbose)
 
 
 if __name__ == "__main__":
