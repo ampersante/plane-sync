@@ -226,6 +226,13 @@ def render_markdown(data: dict, maps: dict, warnings: list[str],
         header_parts.append(f"Pages: {len(pages)}")
     header_parts.append(f"Warnings: {len(warnings)}")
     lines.append(" | ".join(header_parts))
+    sections = ["States", "Labels", "Work Items", "Relations"]
+    if data.get("include_descriptions"):
+        sections.append("Descriptions")
+    sections.append("Modules")
+    if pages:
+        sections.extend(["Pages", "Page Contents"])
+    lines.append(f"Sections: {' → '.join(sections)}")
     lines.append("")
 
     # States
