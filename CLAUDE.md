@@ -29,8 +29,9 @@
 
 | Документ | Назначение |
 |---|---|
-| `plane_api.py` | Общий API-слой: auth, retry, rate limit, profiles (используется обоими скриптами) |
+| `plane_api.py` | Общий API-слой: auth, retry, rate limit, profiles (используется всеми скриптами) |
 | `plane_snapshot.py` | Read: выгрузка snapshot из Plane API в markdown |
+| `plane_fetch.py` | Fetch: гранулярный запрос данных одного айтема (work item, page, module) |
 | `plane_write.py` | Write: создание work items в Plane из markdown-файла |
 | `profiles.json` | Профили проектов для тестирования и запуска (gitignored, создаётся из `profiles.example.json`) |
 | `tasks.md` | Backlog задач на доработку |
@@ -44,8 +45,13 @@
 `profiles.json` хранит preset'ы для запуска на разных проектах:
 
 ```bash
-# Snapshot (read)
+# Snapshot (read all)
 python3 plane_snapshot.py --profile idle-unknown
+
+# Fetch (read one item)
+python3 plane_fetch.py --profile idle-unknown CT-108
+python3 plane_fetch.py --profile idle-unknown --page "Notes"
+python3 plane_fetch.py --profile idle-unknown --module "Sprint 1"
 
 # Write (create items from MD)
 python3 plane_write.py --profile idle-unknown -i tasks.md           # dry-run
