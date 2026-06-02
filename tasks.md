@@ -4,7 +4,7 @@
 
 ## Backlog
 
-- [ ] **Pages-only snapshot**: возможность выгружать Plane pages в отдельный snapshot-файл, отдельно от work items. Сейчас `--pages` добавляет страницы в общий snapshot, но нет отдельного режима/выходного файла только для pages
+- [ ] **Pages-only snapshot**: возможность выгружать Plane pages в отдельный snapshot-файл, отдельно от work items. Сейчас `--pages` добавляет страницы в общий snapshot, но нет отдельного режима/выходного файла только для pages. **Когда будет сделано — обновить алгоритм в CLAUDE.md** (сейчас там написано "пока что страницы в общем snapshot")
 - [ ] **Diff между snapshot'ами**: показывать что изменилось с прошлого snapshot
 - [ ] **Оптимизация relations**: сейчас 358 sequential запросов с throttling (~2.5 мин). Найти способ ускорить (batch endpoint? project-level relations?)
 - [ ] **Интеграция с plane-lean-edit / plane-transfer routing**
