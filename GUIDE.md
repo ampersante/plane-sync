@@ -1,66 +1,66 @@
-# Getting Started Guide
+# Пошаговая инструкция
 
-Step-by-step setup for people who don't use the terminal every day.
+Подробная настройка для тех, кто не работает в терминале каждый день.
 
 ---
 
-## Step 1. Get your API key
+## Шаг 1. Получи API-ключ
 
-1. Go to [Plane](https://app.plane.so)
-2. Click your workspace name at the bottom left
-3. Go to **Settings** → **API Tokens**
-4. Click **Add API Token**, give it a name, click **Create**
-5. Copy the token (it starts with `plane_api_`)
+1. Зайди в [Plane](https://app.plane.so)
+2. Нажми на название workspace внизу слева
+3. Перейди в **Settings** → **API Tokens**
+4. Нажми **Add API Token**, придумай название, нажми **Create**
+5. Скопируй токен (он начинается с `plane_api_`)
 
-## Step 2. Save the key
+## Шаг 2. Сохрани ключ
 
-Open the `plane-sync` folder and create a file called `.env` (with the dot at the start).
+Открой папку `plane-sync` и создай файл `.env` (именно с точкой в начале).
 
-Inside, write one line:
+Внутри напиши одну строку:
 
 ```
-PLANE_API_TOKEN=plane_api_paste_your_token_here
+PLANE_API_TOKEN=plane_api_вставь_свой_токен_сюда
 ```
 
-Save. Done — the key is in place.
+Сохрани. Готово — ключ на месте.
 
-> On Mac, press `Cmd + Shift + .` in Finder to show hidden files.
+> На Mac нажми `Cmd + Shift + .` в Finder, чтобы увидеть скрытые файлы.
 
-## Step 3. Set up your project profile
+## Шаг 3. Настрой профиль проекта
 
-Copy the example profile file:
+Скопируй файл-пример:
 
 ```bash
 cp profiles.example.json profiles.json
 ```
 
-Open `profiles.json` in any text editor and fill in your details:
+Открой `profiles.json` в любом текстовом редакторе и заполни свои данные:
 
 ```json
 {
   "my-project": {
-    "workspace": "my-workspace-slug",
+    "workspace": "slug-твоего-workspace",
     "project": "00000000-0000-0000-0000-000000000000",
     "output": "./snapshot.md"
   }
 }
 ```
 
-**Where to find these values:**
+**Где взять эти значения:**
 
-- **Workspace slug** — look at your Plane URL: `https://app.plane.so/my-workspace-slug/projects/...`
-- **Project UUID** — open your project in Plane and copy the ID from the URL: `https://app.plane.so/my-workspace/projects/00000000-0000-0000-0000-000000000000/...`
+- **Workspace slug** — посмотри URL в Plane: `https://app.plane.so/мой-workspace/projects/...`
+- **Project UUID** — открой проект в Plane и скопируй ID из URL: `https://app.plane.so/.../projects/00000000-0000-0000-0000-000000000000/...`
 
-## Step 4. Run it
+## Шаг 4. Запусти
 
-Open Terminal, navigate to the plane-sync folder, and run:
+Открой Терминал, перейди в папку plane-sync и запусти:
 
 ```bash
-cd path/to/plane-sync
+cd путь/к/plane-sync
 python3 plane_snapshot.py --profile my-project
 ```
 
-You'll see progress:
+Увидишь прогресс:
 
 ```
 Fetching states...
@@ -74,36 +74,36 @@ Done! Snapshot saved to ./snapshot.md
   120 items, 3 modules, 0 warnings
 ```
 
-This takes 1-3 minutes depending on project size (Plane's API has rate limits).
+Это занимает 1–3 минуты в зависимости от размера проекта (Plane ограничивает скорость запросов).
 
-## Step 5. Done
+## Шаг 5. Готово
 
-The `snapshot.md` file is now in your folder. Open it in any text editor.
+Файл `snapshot.md` появился в папке. Открой его в любом текстовом редакторе.
 
-Inside you'll find all your project's work items: names, states, priorities, assignees, dependencies — all in one readable file.
+Внутри — все задачи проекта: названия, статусы, приоритеты, исполнители, зависимости — всё в одном читаемом файле.
 
 ---
 
-## Adding more projects
+## Добавление других проектов
 
-Add another block to `profiles.json`:
+Добавь ещё один блок в `profiles.json`:
 
 ```json
 {
   "my-project": {
     "workspace": "my-workspace",
-    "project": "uuid-of-first-project",
+    "project": "uuid-первого-проекта",
     "output": "./snapshot.md"
   },
   "another-project": {
     "workspace": "my-workspace",
-    "project": "uuid-of-second-project",
+    "project": "uuid-второго-проекта",
     "output": "~/Documents/another-snapshot.md"
   }
 }
 ```
 
-Then run with the profile name:
+Запусти с нужным именем профиля:
 
 ```bash
 python3 plane_snapshot.py --profile another-project
@@ -111,34 +111,34 @@ python3 plane_snapshot.py --profile another-project
 
 ---
 
-## Troubleshooting
+## Если что-то пошло не так
 
-| Problem | Solution |
+| Проблема | Решение |
 |---|---|
-| `PLANE_API_TOKEN not found` | Check that `.env` is in the right folder with no extra spaces |
-| `Authentication failed (HTTP 403)` | Token is wrong or expired — create a new one in Plane |
-| `Rate limited, waiting...` | Normal. Plane limits request rate. The script waits and continues |
-| `No work items found` | Check that your project UUID is correct |
-| Script seems stuck | Wait — fetching relations for large projects takes 2-3 minutes |
+| `PLANE_API_TOKEN not found` | Проверь, что файл `.env` лежит в правильной папке и в нём нет лишних пробелов |
+| `Authentication failed (HTTP 403)` | Токен неправильный или истёк — создай новый в Plane |
+| `Rate limited, waiting...` | Это нормально. Plane ограничивает количество запросов. Скрипт ждёт и продолжает |
+| `No work items found` | Проверь, что Project UUID правильный |
+| Скрипт как будто завис | Подожди — выгрузка связей для больших проектов занимает 2–3 минуты |
 
 ---
 
-## Cheat sheet
+## Шпаргалка
 
 ```bash
-# Download project snapshot
+# Скачать снимок проекта
 python3 plane_snapshot.py --profile my-project
 
-# With task descriptions
+# С описаниями задач
 python3 plane_snapshot.py --profile my-project --descriptions
 
-# Fetch a single work item
+# Посмотреть одну задачу
 python3 plane_fetch.py --profile my-project 108
 
-# Create items from markdown (dry-run first)
-python3 plane_write.py --profile my-project -i items.md
-python3 plane_write.py --profile my-project -i items.md --execute
+# Создать задачи из файла (сначала превью, потом применить)
+python3 plane_write.py --profile my-project -i tasks.md
+python3 plane_write.py --profile my-project -i tasks.md --execute
 
-# Save to a different location
+# Сохранить в другое место
 python3 plane_snapshot.py --profile my-project -o ~/Desktop/snapshot.md
 ```

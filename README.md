@@ -1,137 +1,137 @@
 # plane-sync
 
-Export your [Plane](https://plane.so) project into a single readable file — all tasks, statuses, priorities, assignees, and dependencies in one place. No installs, no dependencies, just Python.
+Выгрузи свой проект из [Plane](https://plane.so) в один читаемый файл — все задачи, статусы, приоритеты, исполнители и зависимости в одном месте. Без установок, без зависимостей, только Python.
 
-## What you can do with it
+## Что умеет
 
-- **Download a full project snapshot** — one command, one file with everything
-- **Look up a specific task** — get all details, comments, and links for any work item
-- **Create or update tasks from a text file** — prepare changes offline, push to Plane when ready
+- **Скачать полный снимок проекта** — одна команда, один файл со всем содержимым
+- **Посмотреть конкретную задачу** — все детали, комментарии и ссылки по любому work item
+- **Создать или обновить задачи из текстового файла** — подготовь изменения офлайн, отправь в Plane когда готово
 
-## Quick start
+## Быстрый старт
 
-**1. Download the tool**
+**1. Скачай инструмент**
 
 ```bash
 git clone https://github.com/ampersante/plane-sync.git
 cd plane-sync
 ```
 
-**2. Get your Plane API key**
+**2. Получи API-ключ Plane**
 
-Open [Plane](https://app.plane.so) → click your workspace name (bottom left) → **Settings** → **API Tokens** → **Add API Token**. Copy the token.
+Открой [Plane](https://app.plane.so) → нажми на название workspace (внизу слева) → **Settings** → **API Tokens** → **Add API Token**. Скопируй токен.
 
-**3. Save the key**
+**3. Сохрани ключ**
 
-Create a file called `.env` in the plane-sync folder with one line:
+Создай файл `.env` в папке plane-sync с одной строкой:
 
 ```
-PLANE_API_TOKEN=plane_api_paste_your_token_here
+PLANE_API_TOKEN=plane_api_вставь_свой_токен_сюда
 ```
 
-**4. Set up your project**
+**4. Настрой свой проект**
 
 ```bash
 cp profiles.example.json profiles.json
 ```
 
-Open `profiles.json` and fill in your details:
+Открой `profiles.json` и заполни свои данные:
 
 ```json
 {
   "my-project": {
-    "workspace": "my-workspace-slug",
+    "workspace": "slug-твоего-workspace",
     "project": "00000000-0000-0000-0000-000000000000",
     "output": "./snapshot.md"
   }
 }
 ```
 
-Where to find these:
-- **Workspace slug** — the word after `app.plane.so/` in your browser: `app.plane.so/my-workspace-slug/...`
-- **Project ID** — the long ID in the URL when you open a project: `app.plane.so/.../projects/00000000-0000-0000-.../...`
+Где взять значения:
+- **Workspace slug** — слово после `app.plane.so/` в браузере: `app.plane.so/мой-workspace/...`
+- **Project ID** — длинный ID в URL когда открываешь проект: `app.plane.so/.../projects/00000000-0000-0000-.../...`
 
-**5. Run**
+**5. Запусти**
 
 ```bash
 python3 plane_snapshot.py --profile my-project
 ```
 
-Wait 1–3 minutes. Done — open `snapshot.md` and see your entire project.
+Подожди 1–3 минуты. Готово — открой `snapshot.md` и увидишь весь проект.
 
-## What's next
+## Что дальше
 
-- **Want task descriptions too?** Add `--descriptions`:
+- **Нужны описания задач?** Добавь `--descriptions`:
   ```bash
   python3 plane_snapshot.py --profile my-project --descriptions
   ```
 
-- **Need details on one task?** Use fetch:
+- **Нужны детали по одной задаче?** Используй fetch:
   ```bash
   python3 plane_fetch.py --profile my-project 108
   ```
 
-- **Want to create or update tasks?** See `example_write.md` for the format, then:
+- **Хочешь создать или обновить задачи?** Смотри `example_write.md` для формата, затем:
   ```bash
-  python3 plane_write.py --profile my-project -i my-tasks.md           # preview
-  python3 plane_write.py --profile my-project -i my-tasks.md --execute # apply
+  python3 plane_write.py --profile my-project -i my-tasks.md           # превью
+  python3 plane_write.py --profile my-project -i my-tasks.md --execute # применить
   ```
 
-- **Need a step-by-step walkthrough?** See [GUIDE.md](GUIDE.md)
+- **Нужна пошаговая инструкция?** Смотри [GUIDE.md](GUIDE.md)
 
-## Requirements
+## Требования
 
 - Python 3.10+
-- No packages to install — uses only Python standard library
+- Ничего устанавливать не нужно — используется только стандартная библиотека Python
 
-## How it works
+## Как это работает
 
-Uses the Plane REST API with your API key. Fetching takes a few minutes because Plane limits request speed — the tool handles this automatically. All data stays local on your machine.
+Использует Plane REST API с твоим API-ключом. Выгрузка занимает несколько минут, потому что Plane ограничивает скорость запросов — инструмент обрабатывает это автоматически. Все данные остаются локально на твоей машине.
 
-## Advanced usage
+## Продвинутое использование
 
 <details>
-<summary>All command-line options</summary>
+<summary>Все параметры командной строки</summary>
 
-### Snapshot (download project)
-
-```bash
-python3 plane_snapshot.py --profile my-project [options]
-```
-
-| Option | What it does |
-|---|---|
-| `--descriptions` | Include task descriptions |
-| `--pages` | Include project pages |
-| `-o path` | Save to a specific file |
-| `--prefix XX` | Set task ID prefix (auto-detected by default) |
-
-### Fetch (look up one item)
+### Snapshot (скачать проект)
 
 ```bash
-python3 plane_fetch.py --profile my-project <identifier>
+python3 plane_snapshot.py --profile my-project [опции]
 ```
 
-| Option | What it does |
+| Опция | Что делает |
 |---|---|
-| `PRJ-108` or `108` | Fetch a work item |
-| `--page "Page Name"` | Fetch a page |
-| `--module "Module Name"` | Fetch a module |
-| `--no-comments` | Skip comments |
-| `--no-relations` | Skip relations |
-| `--json` | Output raw JSON |
+| `--descriptions` | Включить описания задач |
+| `--pages` | Включить страницы проекта |
+| `-o путь` | Сохранить в конкретный файл |
+| `--prefix XX` | Задать префикс ID задач (по умолчанию определяется автоматически) |
 
-### Write (create/update/delete)
+### Fetch (посмотреть один элемент)
+
+```bash
+python3 plane_fetch.py --profile my-project <идентификатор>
+```
+
+| Опция | Что делает |
+|---|---|
+| `PRJ-108` или `108` | Получить work item |
+| `--page "Название"` | Получить страницу |
+| `--module "Название"` | Получить модуль |
+| `--no-comments` | Пропустить комментарии |
+| `--no-relations` | Пропустить связи |
+| `--json` | Вывести сырой JSON |
+
+### Write (создать/обновить/удалить)
 
 ```bash
 python3 plane_write.py --profile my-project -i file.md [--execute]
 ```
 
-Without `--execute` it only shows what would happen (dry run). See `example_write.md` for the input format.
+Без `--execute` только показывает что произойдёт (dry run). Формат входного файла — в `example_write.md`.
 
-### Running without profiles
+### Запуск без профилей
 
-You can skip profiles and pass everything directly:
+Можно не использовать профили и передать всё напрямую:
 
 ```bash
 python3 plane_snapshot.py -w my-workspace -p <project-uuid> -o ./snapshot.md
@@ -139,6 +139,6 @@ python3 plane_snapshot.py -w my-workspace -p <project-uuid> -o ./snapshot.md
 
 </details>
 
-## License
+## Лицензия
 
 MIT
