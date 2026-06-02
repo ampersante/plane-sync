@@ -5,12 +5,12 @@ Retrieves a work item, page, or module with all associated data
 (description, comments, relations, links) and outputs as markdown to stdout.
 
 Usage:
-    python3 plane_fetch.py --profile idle-unknown CT-108
-    python3 plane_fetch.py --profile idle-unknown 108
-    python3 plane_fetch.py --profile idle-unknown CT-108 --no-comments
-    python3 plane_fetch.py --profile idle-unknown --page "Meeting Notes"
-    python3 plane_fetch.py --profile idle-unknown --module "Sprint 4"
-    python3 plane_fetch.py --profile idle-unknown --uuid <work-item-uuid>
+    python3 plane_fetch.py --profile my-project PRJ-108
+    python3 plane_fetch.py --profile my-project 108
+    python3 plane_fetch.py --profile my-project PRJ-108 --no-comments
+    python3 plane_fetch.py --profile my-project --page "Meeting Notes"
+    python3 plane_fetch.py --profile my-project --module "Sprint 4"
+    python3 plane_fetch.py --profile my-project --uuid <work-item-uuid>
 """
 
 import argparse
@@ -23,6 +23,7 @@ from pathlib import Path
 from plane_api import (
     load_dotenv, set_base_url,
     api_get, api_get_list, api_get_paginated, load_profile,
+    html_to_text,
 )
 
 _UUID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.I)
@@ -296,8 +297,8 @@ def render_work_item_md(data: dict) -> str:
     lines.append("")
 
     # Description
-    desc = item.get("description_html", "")
-    if desc and desc != "<p></p>":
+    desc = html_to_text(item.get("description_html", "") or "")
+    if desc:
         lines.append("## Description")
         lines.append("")
         lines.append(desc)
@@ -334,8 +335,8 @@ def render_work_item_md(data: dict) -> str:
             date = c.get("created_at", "")[:10]
             lines.append(f"### {date} — {author}")
             lines.append("")
-            comment_html = c.get("comment_html", "") or c.get("comment", "")
-            lines.append(comment_html)
+            comment_raw = c.get("comment_html", "") or c.get("comment", "")
+            lines.append(html_to_text(comment_raw) if comment_raw else "")
             lines.append("")
 
     # Links
@@ -378,8 +379,8 @@ def render_page_md(data: dict) -> str:
 
     lines.append("")
 
-    content = page.get("description_html", "")
-    if content and content != "<p></p>":
+    content = html_to_text(page.get("description_html", "") or "")
+    if content:
         lines.append("## Content")
         lines.append("")
         lines.append(content)
@@ -445,10 +446,10 @@ def main():
         description="Fetch detailed data for a single Plane item",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
-  python3 plane_fetch.py --profile idle-unknown CT-108
-  python3 plane_fetch.py --profile idle-unknown 108 --no-comments
-  python3 plane_fetch.py --profile idle-unknown --page "Meeting Notes"
-  python3 plane_fetch.py --profile idle-unknown --module "Sprint 4"
+  python3 plane_fetch.py --profile my-project PRJ-108
+  python3 plane_fetch.py --profile my-project 108 --no-comments
+  python3 plane_fetch.py --profile my-project --page "Meeting Notes"
+  python3 plane_fetch.py --profile my-project --module "Sprint 4"
 """)
     parser.add_argument("identifier", nargs="?", default=None,
                         help="Work item ID (e.g. CT-108 or 108)")

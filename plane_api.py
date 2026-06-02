@@ -6,13 +6,16 @@ profile loading, and HTTP methods (GET, POST, PATCH).
 Used by plane_snapshot.py (read) and plane_write.py (write).
 """
 
+import html
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from html.parser import HTMLParser
 from pathlib import Path
 
 # ── Module state ────────────────────────────────────────────────────────────
@@ -230,3 +233,148 @@ def load_profile(name: str) -> dict:
         print(f"Error: profile '{name}' not found. Available: {available}", file=sys.stderr)
         sys.exit(1)
     return profiles[name]
+
+
+# ── HTML → text ────────────────────────────────────────────────────────────
+
+class _PlaneHTMLConverter(HTMLParser):
+    """Converts Plane editor HTML to clean text with light markdown."""
+
+    _BLOCK_TAGS = {"p", "div", "blockquote", "h1", "h2", "h3", "h4", "h5", "h6"}
+    _HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
+    _SKIP_TAGS = {"image-component"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._chunks: list[str] = []
+        self._list_stack: list[str] = []  # "ul" or "ol"
+        self._ol_counters: list[int] = []
+        self._in_li = False
+        self._skip_depth = 0
+        self._href: str | None = None
+        self._link_text: list[str] = []
+        self._in_pre = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        attr_map = dict(attrs)
+
+        if tag in self._SKIP_TAGS:
+            if self._skip_depth == 0:
+                self._chunks.append("[image]")
+            self._skip_depth += 1
+            return
+        if self._skip_depth:
+            return
+
+        if tag in self._HEADING_TAGS:
+            level = int(tag[1])
+            self._chunks.append(f"\n{'#' * level} ")
+        elif tag == "p":
+            pass  # text flows, newlines added on close
+        elif tag == "br":
+            self._chunks.append("\n")
+        elif tag == "ul":
+            self._list_stack.append("ul")
+        elif tag == "ol":
+            self._list_stack.append("ol")
+            self._ol_counters.append(0)
+        elif tag == "li":
+            self._in_li = True
+            indent = "  " * max(0, len(self._list_stack) - 1)
+            if self._list_stack and self._list_stack[-1] == "ol":
+                self._ol_counters[-1] += 1
+                self._chunks.append(f"{indent}{self._ol_counters[-1]}. ")
+            else:
+                self._chunks.append(f"{indent}- ")
+        elif tag in ("strong", "b"):
+            self._chunks.append("**")
+        elif tag in ("em", "i"):
+            self._chunks.append("*")
+        elif tag == "code" and not self._in_pre:
+            self._chunks.append("`")
+        elif tag == "pre":
+            self._in_pre = True
+            self._chunks.append("\n```\n")
+        elif tag == "blockquote":
+            self._chunks.append("\n> ")
+        elif tag == "a":
+            self._href = html.unescape(attr_map.get("href", ""))
+            self._link_text = []
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+
+        if tag in self._SKIP_TAGS:
+            self._skip_depth = max(0, self._skip_depth - 1)
+            return
+        if self._skip_depth:
+            return
+
+        if tag in self._HEADING_TAGS:
+            self._chunks.append("\n\n")
+        elif tag == "p":
+            if not self._in_li:
+                self._chunks.append("\n\n")
+            else:
+                pass  # inside <li>, <p> is just a wrapper
+        elif tag == "div":
+            self._chunks.append("\n\n")
+        elif tag == "ul":
+            if self._list_stack:
+                self._list_stack.pop()
+            self._chunks.append("\n")
+        elif tag == "ol":
+            if self._list_stack:
+                self._list_stack.pop()
+            if self._ol_counters:
+                self._ol_counters.pop()
+            self._chunks.append("\n")
+        elif tag == "li":
+            self._in_li = False
+            self._chunks.append("\n")
+        elif tag in ("strong", "b"):
+            self._chunks.append("**")
+        elif tag in ("em", "i"):
+            self._chunks.append("*")
+        elif tag == "code" and not self._in_pre:
+            self._chunks.append("`")
+        elif tag == "pre":
+            self._in_pre = False
+            self._chunks.append("\n```\n")
+        elif tag == "blockquote":
+            self._chunks.append("\n\n")
+        elif tag == "a":
+            text = "".join(self._link_text).strip()
+            href = self._href or ""
+            if href and text and text != href:
+                self._chunks.append(f"[{text}]({href})")
+            elif href:
+                self._chunks.append(href)
+            else:
+                self._chunks.append(text)
+            self._href = None
+            self._link_text = []
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth:
+            return
+        if self._href is not None:
+            self._link_text.append(data)
+        else:
+            self._chunks.append(data)
+
+    def get_result(self) -> str:
+        return "".join(self._chunks)
+
+
+def html_to_text(raw: str) -> str:
+    """Convert Plane description_html to clean text with light markdown."""
+    if not raw:
+        return ""
+    converter = _PlaneHTMLConverter()
+    converter.feed(raw)
+    result = converter.get_result()
+    result = html.unescape(result)
+    result = re.sub(r"\n{3,}", "\n\n", result)
+    return result.strip()

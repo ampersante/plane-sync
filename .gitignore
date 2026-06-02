@@ -3,3 +3,4 @@ profiles.json
 snapshot.md
 __pycache__/
 *.pyc
+.DS_Store

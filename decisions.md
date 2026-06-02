@@ -22,7 +22,7 @@
 
 ## DEC-004 — Параметрический скрипт в отдельном репо (2026-04-14)
 
-**Решение**: вынести скрипт из idle unknown в отдельный репозиторий plane-sync. Workspace, project ID, output — через CLI аргументы.
+**Решение**: вынести скрипт в отдельный репозиторий plane-sync. Workspace, project ID, output — через CLI аргументы.
 **Почему**: инструмент будет использоваться в нескольких проектах. Нужно версионирование и GitHub.
 **Следствие**: в каждом проекте хранится только .env + snapshot.md. Скрипт вызывается по абсолютному пути.
 
@@ -52,7 +52,7 @@
 
 ## DEC-009 — Action/ID колонки для update/delete (2026-04-22)
 
-**Решение**: колонка Action (create/update/delete) и ID (e.g. TESTPROJEC-401) в таблице Items. Для update пустые ячейки = "не менять". DELETE возвращает пустое тело (204) — обработано в `_request_with_retry`.
+**Решение**: колонка Action (create/update/delete) и ID (e.g. PRJ-401) в таблице Items. Для update пустые ячейки = "не менять". DELETE возвращает пустое тело (204) — обработано в `_request_with_retry`.
 **Почему**: единый формат файла для всех операций. Пользователь ссылается на snapshot и диктует что поменять — Claude генерирует MD с нужными action/ID.
 **Следствие**: полный CRUD в одном файле. Порядок выполнения: delete → update → create (безопасный).
 
@@ -67,3 +67,9 @@
 **Решение**: поддержка project pages в обоих скриптах. Snapshot (`--pages` flag) выгружает pages с контентом и иерархией. Write создаёт pages из `## Pages` таблицы + `## Page Contents` секции. Только create — REST API возвращает 405 на PATCH/PUT/DELETE.
 **Почему**: API-ограничение Plane. Pages нужны для документации проекта. Subpages через `parent_id` / `parent_ref`.
 **Следствие**: refs с `NEW-P` prefix (отличаются от work item `NEW-`). Topological sort для parent→child порядка создания. Порядок выполнения: modules → pages → work items.
+
+## DEC-012 — HTML→text конвертер для description_html (2026-06-01)
+
+**Решение**: `html_to_text()` в `plane_api.py` — конвертирует `description_html` из Plane API в чистый текст с лёгким markdown (bold, italic, списки, заголовки, ссылки). Кастомные теги Plane (`<image-component>`) → `[image]`.
+**Почему**: Plane API отдаёт описания только как HTML с editor-классами и data-id атрибутами. Без конвертера snapshot/fetch содержал raw HTML, непригодный для чтения.
+**Следствие**: stdlib only (`html.parser.HTMLParser`). Применяется в 5 точках вывода (snapshot: pages + descriptions; fetch: description + page content + comments). Write path не затронут — он отправляет HTML в API.

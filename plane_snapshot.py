@@ -9,10 +9,10 @@ Reads PLANE_API_TOKEN from .env file (current dir, output dir, or --env flag)
 or from environment variable.
 
 Usage:
-    python3 plane_snapshot.py --workspace bigbowls --project <uuid>
-    python3 plane_snapshot.py --workspace bigbowls --project <uuid> --descriptions
-    python3 plane_snapshot.py --workspace bigbowls --project <uuid> -o ./snapshot.md
-    python3 plane_snapshot.py --workspace bigbowls --project <uuid> --env /path/to/.env
+    python3 plane_snapshot.py --profile my-project
+    python3 plane_snapshot.py --profile my-project --descriptions
+    python3 plane_snapshot.py -w my-workspace -p <project-uuid> -o ./snapshot.md
+    python3 plane_snapshot.py -w my-workspace -p <project-uuid> --env /path/to/.env
 """
 
 import argparse
@@ -25,6 +25,7 @@ from pathlib import Path
 from plane_api import (
     load_dotenv, get_warnings, set_base_url,
     api_get, api_get_list, api_get_paginated, load_profile,
+    html_to_text,
 )
 
 
@@ -293,8 +294,8 @@ def render_markdown(data: dict, maps: dict, warnings: list[str],
             updated = page.get("updated_at", "")[:10]
             lines.append(f"Owner: {owner} | Access: {access} | Updated: {updated}")
             lines.append("")
-            content = page.get("description_html", "") or ""
-            if content and content != "<p></p>":
+            content = html_to_text(page.get("description_html", "") or "")
+            if content:
                 lines.append(content)
                 lines.append("")
             for child in sorted(page_children.get(page["id"], []), key=lambda p: p["name"]):
@@ -379,8 +380,8 @@ def render_markdown(data: dict, maps: dict, warnings: list[str],
         lines.append("## Descriptions")
         lines.append("")
         for item in sorted(work_items, key=lambda x: x["sequence_id"]):
-            desc = item.get("description_html", "")
-            if desc and desc != "<p></p>":
+            desc = html_to_text(item.get("description_html", "") or "")
+            if desc:
                 lines.append(f"### {_item_id(item)}: {_esc(item['name'])}")
                 lines.append(desc)
                 lines.append("")
@@ -408,9 +409,9 @@ def main():
         description="Plane project snapshot → markdown",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
-  python3 plane_snapshot.py --profile idle-unknown
-  python3 plane_snapshot.py --profile idle-unknown --descriptions
-  python3 plane_snapshot.py -w bigbowls -p e892b839-... -o ./snapshot.md
+  python3 plane_snapshot.py --profile my-project
+  python3 plane_snapshot.py --profile my-project --descriptions
+  python3 plane_snapshot.py -w my-workspace -p <project-uuid> -o ./snapshot.md
 """)
     parser.add_argument("--profile",
                         help="Named profile from profiles.json (provides workspace, project, env, output)")

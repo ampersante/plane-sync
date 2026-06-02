@@ -46,19 +46,19 @@
 
 ```bash
 # Snapshot (read all)
-python3 plane_snapshot.py --profile idle-unknown
+python3 plane_snapshot.py --profile my-project
 
 # Fetch (read one item)
-python3 plane_fetch.py --profile idle-unknown CT-108
-python3 plane_fetch.py --profile idle-unknown --page "Notes"
-python3 plane_fetch.py --profile idle-unknown --module "Sprint 1"
+python3 plane_fetch.py --profile my-project PRJ-108
+python3 plane_fetch.py --profile my-project --page "Notes"
+python3 plane_fetch.py --profile my-project --module "Sprint 1"
 
 # Write (create items from MD)
-python3 plane_write.py --profile idle-unknown -i tasks.md           # dry-run
-python3 plane_write.py --profile idle-unknown -i tasks.md --execute # создание
+python3 plane_write.py --profile my-project -i tasks.md           # dry-run
+python3 plane_write.py --profile my-project -i tasks.md --execute # создание
 
 # Прямые аргументы по-прежнему работают (без профиля)
-python3 plane_snapshot.py -w bigbowls -p <uuid> -o ./snapshot.md
+python3 plane_snapshot.py -w my-workspace -p <project-uuid> -o ./snapshot.md
 ```
 
 Из сессии Claude Code в этой папке можно тестировать любую фичу на любом проекте одной командой, не переключаясь в другую папку.

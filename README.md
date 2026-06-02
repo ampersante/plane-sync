@@ -1,44 +1,54 @@
 # plane-sync
 
-Snapshot tool for [Plane](https://plane.so) projects. Dumps full project state into a single markdown file optimized for LLM consumption.
+CLI tool for two-way sync between [Plane](https://plane.so) and local markdown files. Dump your entire project into a single readable file, fetch details for a specific item, or create/update/delete work items from markdown.
+
+No dependencies — Python 3.10+ stdlib only.
 
 ## What it does
 
-One command → one markdown file with:
+**Read** — full project snapshot as markdown:
 - States, Labels, Members, Modules (with counters)
-- All work items with resolved names (no UUIDs)
-- Parent-child hierarchy
-- Relations (blocking, blocked_by, relates_to, etc.)
-- Optionally: HTML descriptions
+- All work items with resolved names (no raw UUIDs)
+- Parent-child hierarchy, relations, descriptions
+- Optionally: project pages with content
+
+**Fetch** — detailed view of a single item:
+- Work item with description, comments, relations, links
+- Page with content
+- Module with member items
+
+**Write** — create, update, and delete from markdown:
+- Work items with parent/child, labels, assignees, modules
+- Relations, descriptions, comments, links
+- Module CRUD, page creation
+- Dry-run by default, `--execute` to apply
 
 ## Requirements
 
 - Python 3.10+
-- No dependencies (stdlib only)
-- Plane API token ([get one here](https://app.plane.so) → workspace settings → API Tokens)
+- Plane API token ([get one here](https://app.plane.so) → Workspace Settings → API Tokens)
 
 ## Quick start
 
 ```bash
-# 1. Add your API token
+# 1. Clone
+git clone https://github.com/ampersante/plane-sync.git
+cd plane-sync
+
+# 2. Add your API token
 echo "PLANE_API_TOKEN=plane_api_xxx" > .env
 
-# 2. Run with a profile
-python3 plane_snapshot.py --profile idle-unknown
+# 3. Set up a profile
+cp profiles.example.json profiles.json
+# Edit profiles.json with your workspace and project details
 
-# 3. Or run with explicit args
-python3 plane_snapshot.py -w bigbowls -p e892b839-ce38-4c8e-8082-624c67026dbc
+# 4. Run
+python3 plane_snapshot.py --profile my-project
 ```
 
 ## Profiles
 
-`profiles.json` (gitignored) stores named presets for projects you work with. Copy `profiles.example.json` to get started:
-
-```bash
-cp profiles.example.json profiles.json
-```
-
-Then edit with your projects:
+`profiles.json` (gitignored) stores named presets for your projects. Copy `profiles.example.json` to get started:
 
 ```json
 {
@@ -51,36 +61,109 @@ Then edit with your projects:
 }
 ```
 
-```bash
-# Run by profile name — workspace, project, env, output all come from profiles.json
-python3 plane_snapshot.py --profile idle-unknown
-python3 plane_snapshot.py --profile idle-unknown --descriptions
+**Where to find workspace and project:**
+- **Workspace slug** — the word after `app.plane.so/` in your browser URL
+- **Project UUID** — the long ID in the URL when you open a project: `app.plane.so/workspace/projects/<this-part>/...`
 
-# CLI args override profile values
-python3 plane_snapshot.py --profile idle-unknown -o /tmp/test.md
-```
+## Usage
 
-## Arguments
-
-| Flag | Required | Description |
-|---|---|---|
-| `--profile` | No | Named profile from profiles.json |
-| `-w`, `--workspace` | Yes* | Plane workspace slug |
-| `-p`, `--project` | Yes* | Plane project UUID |
-| `--prefix` | No | Work item ID prefix (e.g. CT). Auto-detected if omitted |
-| `--descriptions` | No | Include work item descriptions in output |
-| `-o`, `--output` | No | Output file path (default: `./snapshot.md`) |
-| `--env` | No | Path to .env file (default: searches current dir and parents) |
-
-*Not required if `--profile` provides them.
-
-## Using with multiple projects
-
-Add each project to `profiles.json`, then run by name:
+### Snapshot (read all)
 
 ```bash
-python3 plane_snapshot.py --profile idle-unknown
-python3 plane_snapshot.py --profile another-project
+# Full project snapshot
+python3 plane_snapshot.py --profile my-project
+
+# With work item descriptions
+python3 plane_snapshot.py --profile my-project --descriptions
+
+# With project pages
+python3 plane_snapshot.py --profile my-project --pages
+
+# Without profile (explicit args)
+python3 plane_snapshot.py -w my-workspace -p <project-uuid> -o ./snapshot.md
 ```
 
-Each profile points to its own `.env` (for per-project tokens) and output path.
+| Flag | Description |
+|---|---|
+| `--profile` | Named profile from profiles.json |
+| `-w`, `--workspace` | Plane workspace slug |
+| `-p`, `--project` | Plane project UUID |
+| `--prefix` | Work item ID prefix (auto-detected if omitted) |
+| `--descriptions` | Include work item descriptions |
+| `--pages` | Include project pages with content |
+| `-o`, `--output` | Output file path (default: `./snapshot.md`) |
+| `--env` | Path to .env file |
+
+### Fetch (read one item)
+
+```bash
+# Work item by ID
+python3 plane_fetch.py --profile my-project PRJ-108
+
+# By sequence number only
+python3 plane_fetch.py --profile my-project 108
+
+# Without comments
+python3 plane_fetch.py --profile my-project PRJ-108 --no-comments
+
+# Page by name
+python3 plane_fetch.py --profile my-project --page "Meeting Notes"
+
+# Module by name
+python3 plane_fetch.py --profile my-project --module "Sprint 4"
+
+# Raw JSON output
+python3 plane_fetch.py --profile my-project PRJ-108 --json
+```
+
+### Write (create/update/delete)
+
+```bash
+# Dry-run (preview what will happen)
+python3 plane_write.py --profile my-project -i items.md
+
+# Execute changes
+python3 plane_write.py --profile my-project -i items.md --execute
+```
+
+Write input is a markdown file with tables and sections. See `example_write.md` for the full format.
+
+**Create** new items:
+
+```markdown
+## Items
+
+| Ref | Name | State | Priority | Labels | Assignees | Parent | Module |
+|---|---|---|---|---|---|---|---|
+| NEW-1 | Set up CI | Todo | high | dev | alice | | Infrastructure |
+| NEW-2 | Write tests | Todo | medium | | | NEW-1 | |
+```
+
+**Update** existing items (empty cells = don't change):
+
+```markdown
+| Action | ID | Name | State | Priority | Labels | Assignees |
+|---|---|---|---|---|---|---|
+| update | PRJ-101 | | Done | | | |
+| update | PRJ-102 | Renamed task | In Progress | high | | |
+```
+
+**Delete** items:
+
+```markdown
+| Action | ID | Name | State | Priority | Labels | Assignees |
+|---|---|---|---|---|---|---|
+| delete | PRJ-103 | | | | | |
+```
+
+## How it works
+
+- Uses Plane REST API v1 with API key authentication
+- Rate limit handling: sequential requests with 0.3s throttle, automatic retry on 429
+- Relations are fetched per-item (N+1) — expect ~2-3 min for large projects (300+ items)
+- Module membership uses `module-issues/` endpoint (Plane API quirk)
+- Descriptions are converted from Plane's internal HTML to clean text/markdown
+
+## License
+
+MIT

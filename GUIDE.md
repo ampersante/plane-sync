@@ -1,125 +1,144 @@
-# Как пользоваться plane-sync
+# Getting Started Guide
 
-Этот инструмент скачивает все задачи из Plane и сохраняет их в один файл на твоём компьютере.
+Step-by-step setup for people who don't use the terminal every day.
 
 ---
 
-## Шаг 1. Получи API-ключ
+## Step 1. Get your API key
 
-1. Зайди в [Plane](https://app.plane.so)
-2. Нажми на название workspace внизу слева
-3. Перейди в **Settings** → **API Tokens**
-4. Нажми **Add API Token**, придумай название, нажми **Create**
-5. Скопируй токен (он начинается с `plane_api_`)
+1. Go to [Plane](https://app.plane.so)
+2. Click your workspace name at the bottom left
+3. Go to **Settings** → **API Tokens**
+4. Click **Add API Token**, give it a name, click **Create**
+5. Copy the token (it starts with `plane_api_`)
 
-## Шаг 2. Сохрани ключ
+## Step 2. Save the key
 
-Открой папку `plane-sync` и создай файл `.env` (именно с точкой в начале).
+Open the `plane-sync` folder and create a file called `.env` (with the dot at the start).
 
-Внутри напиши одну строку:
+Inside, write one line:
 
 ```
-PLANE_API_TOKEN=plane_api_сюда_вставь_свой_токен
+PLANE_API_TOKEN=plane_api_paste_your_token_here
 ```
 
-Сохрани файл. Готово — ключ на месте.
+Save. Done — the key is in place.
 
-> Если не видишь файл в Finder — нажми `Cmd + Shift + .` чтобы показать скрытые файлы.
+> On Mac, press `Cmd + Shift + .` in Finder to show hidden files.
 
-## Шаг 3. Запусти
+## Step 3. Set up your project profile
 
-Открой Терминал, перейди в папку plane-sync и запусти:
+Copy the example profile file:
 
 ```bash
-cd путь/к/plane-sync
-python3 plane_snapshot.py --profile idle-unknown
+cp profiles.example.json profiles.json
 ```
 
-Скрипт начнёт скачивать данные — ты увидишь прогресс:
+Open `profiles.json` in any text editor and fill in your details:
+
+```json
+{
+  "my-project": {
+    "workspace": "my-workspace-slug",
+    "project": "00000000-0000-0000-0000-000000000000",
+    "output": "./snapshot.md"
+  }
+}
+```
+
+**Where to find these values:**
+
+- **Workspace slug** — look at your Plane URL: `https://app.plane.so/my-workspace-slug/projects/...`
+- **Project UUID** — open your project in Plane and copy the ID from the URL: `https://app.plane.so/my-workspace/projects/00000000-0000-0000-0000-000000000000/...`
+
+## Step 4. Run it
+
+Open Terminal, navigate to the plane-sync folder, and run:
+
+```bash
+cd path/to/plane-sync
+python3 plane_snapshot.py --profile my-project
+```
+
+You'll see progress:
 
 ```
 Fetching states...
 Fetching labels...
 Fetching work items...
-  Got 280 work items
+  Got 120 work items
 Fetching relations...
-  Relations: 50/280...
-  Relations: 100/280...
-Done! Snapshot saved to .../snapshot.md
-  280 items, 5 modules, 0 warnings
+  Relations: 50/120...
+  Relations: 100/120...
+Done! Snapshot saved to ./snapshot.md
+  120 items, 3 modules, 0 warnings
 ```
 
-Это занимает 2-3 минуты (из-за лимитов Plane API).
+This takes 1-3 minutes depending on project size (Plane's API has rate limits).
 
-## Шаг 4. Готово
+## Step 5. Done
 
-Файл `snapshot.md` появится в папке проекта. Его можно открыть в любом текстовом редакторе.
+The `snapshot.md` file is now in your folder. Open it in any text editor.
 
-Внутри — все задачи проекта: названия, статусы, приоритеты, кто назначен, зависимости.
-
----
-
-## Как добавить другой проект
-
-1. Узнай **workspace slug** — это слово в URL Plane после `app.plane.so/`:
-   ```
-   https://app.plane.so/myworkspace/projects/...
-                          ^^^^^^^^^^^
-   ```
-
-2. Узнай **project UUID** — зайди в проект, скопируй ID из URL:
-   ```
-   https://app.plane.so/myworkspace/projects/e892b839-ce38-4c8e-8082-624c67026dbc/...
-                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-   ```
-
-3. Открой `profiles.json` (если его нет — скопируй `profiles.example.json` и переименуй) и добавь новый блок:
-
-   ```json
-   {
-     "idle-unknown": {
-       "workspace": "bigbowls",
-       "project": "e892b839-ce38-4c8e-8082-624c67026dbc",
-       "env": "/путь/к/проекту/.env",
-       "output": "/путь/к/проекту/snapshot.md"
-     },
-     "my-new-project": {
-       "workspace": "myworkspace",
-       "project": "uuid-нового-проекта",
-       "env": "/путь/к/другому/проекту/.env",
-       "output": "/путь/к/другому/проекту/snapshot.md"
-     }
-   }
-   ```
-
-4. Запусти:
-   ```bash
-   python3 plane_snapshot.py --profile my-new-project
-   ```
+Inside you'll find all your project's work items: names, states, priorities, assignees, dependencies — all in one readable file.
 
 ---
 
-## Если что-то пошло не так
+## Adding more projects
 
-| Проблема | Решение |
-|---|---|
-| `PLANE_API_TOKEN not found` | Проверь что файл `.env` лежит в правильной папке и в нём нет лишних пробелов |
-| `Authentication failed (HTTP 403)` | Токен неправильный или истёк — создай новый в Plane |
-| `Rate limited, waiting...` | Это нормально. Plane ограничивает количество запросов. Скрипт ждёт и продолжает |
-| `No work items found` | Проверь что project UUID правильный |
-| Скрипт завис | Подожди — relations fetch для больших проектов занимает 2-3 минуты |
+Add another block to `profiles.json`:
 
----
+```json
+{
+  "my-project": {
+    "workspace": "my-workspace",
+    "project": "uuid-of-first-project",
+    "output": "./snapshot.md"
+  },
+  "another-project": {
+    "workspace": "my-workspace",
+    "project": "uuid-of-second-project",
+    "output": "~/Documents/another-snapshot.md"
+  }
+}
+```
 
-## Шпаргалка
+Then run with the profile name:
 
 ```bash
-# Скачать snapshot проекта
-python3 plane_snapshot.py --profile idle-unknown
+python3 plane_snapshot.py --profile another-project
+```
 
-# Скачать с описаниями задач
-python3 plane_snapshot.py --profile idle-unknown --descriptions
+---
 
-# Скачать в другое место
-python3 plane_snapshot.py --profile idle-unknown -o ~/Desktop/snapshot.md
+## Troubleshooting
+
+| Problem | Solution |
+|---|---|
+| `PLANE_API_TOKEN not found` | Check that `.env` is in the right folder with no extra spaces |
+| `Authentication failed (HTTP 403)` | Token is wrong or expired — create a new one in Plane |
+| `Rate limited, waiting...` | Normal. Plane limits request rate. The script waits and continues |
+| `No work items found` | Check that your project UUID is correct |
+| Script seems stuck | Wait — fetching relations for large projects takes 2-3 minutes |
+
+---
+
+## Cheat sheet
+
+```bash
+# Download project snapshot
+python3 plane_snapshot.py --profile my-project
+
+# With task descriptions
+python3 plane_snapshot.py --profile my-project --descriptions
+
+# Fetch a single work item
+python3 plane_fetch.py --profile my-project 108
+
+# Create items from markdown (dry-run first)
+python3 plane_write.py --profile my-project -i items.md
+python3 plane_write.py --profile my-project -i items.md --execute
+
+# Save to a different location
+python3 plane_snapshot.py --profile my-project -o ~/Desktop/snapshot.md
 ```

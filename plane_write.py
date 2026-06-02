@@ -7,9 +7,9 @@ descriptions, comments, links) and creates them via Plane REST API.
 Dry-run by default — add --execute to actually create items.
 
 Usage:
-    python3 plane_write.py --profile idle-unknown --input tasks.md
-    python3 plane_write.py --profile idle-unknown --input tasks.md --execute
-    python3 plane_write.py -w bigbowls -p <uuid> -i tasks.md --execute
+    python3 plane_write.py --profile my-project --input tasks.md
+    python3 plane_write.py --profile my-project --input tasks.md --execute
+    python3 plane_write.py -w my-workspace -p <project-uuid> -i tasks.md --execute
 """
 
 import argparse
@@ -1381,9 +1381,9 @@ def main():
         description="Create work items in Plane from markdown",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
-  python3 plane_write.py --profile idle-unknown -i tasks.md
-  python3 plane_write.py --profile idle-unknown -i tasks.md --execute
-  python3 plane_write.py -w bigbowls -p <uuid> -i tasks.md --execute
+  python3 plane_write.py --profile my-project -i tasks.md
+  python3 plane_write.py --profile my-project -i tasks.md --execute
+  python3 plane_write.py -w my-workspace -p <project-uuid> -i tasks.md --execute
 """)
     parser.add_argument("--profile",
                         help="Named profile from profiles.json")
