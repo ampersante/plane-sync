@@ -247,12 +247,9 @@ def render_markdown(data: dict, maps: dict, warnings: list[str],
     # Header
     lines.append(f"# Plane Snapshot")
     lines.append(f"Generated: {now} | Workspace: {workspace} | Project: {project_id[:8]}... ({id_prefix})")
-    pages = data.get("pages", [])
     intake = data.get("intake", [])
     header_parts = [f"Items: {len(work_items)}", f"Relations: {total_relations}",
                     f"Modules: {len(data['modules'])}"]
-    if pages:
-        header_parts.append(f"Pages: {len(pages)}")
     if intake:
         header_parts.append(f"Intake: {len(intake)}")
     header_parts.append(f"Warnings: {len(warnings)}")
@@ -261,8 +258,6 @@ def render_markdown(data: dict, maps: dict, warnings: list[str],
     if data.get("include_descriptions"):
         sections.append("Descriptions")
     sections.append("Modules")
-    if pages:
-        sections.extend(["Pages", "Page Contents"])
     if intake:
         sections.append("Intake")
     lines.append(f"Sections: {' → '.join(sections)}")
@@ -301,40 +296,6 @@ def render_markdown(data: dict, maps: dict, warnings: list[str],
                      f"{m.get('completed_issues', 0)} | {m.get('started_issues', 0)} | "
                      f"{m.get('unstarted_issues', 0)} | {m.get('backlog_issues', 0)} |")
     lines.append("")
-
-    # Pages (opt-in)
-    if pages:
-        lines.append("## Pages")
-        lines.append("")
-
-        # Build parent→children map
-        page_children: dict[str, list[dict]] = {}
-        top_pages: list[dict] = []
-        for page in pages:
-            pid = page.get("parent_id")
-            if pid:
-                page_children.setdefault(pid, []).append(page)
-            else:
-                top_pages.append(page)
-
-        def _render_page(page: dict, level: int = 3) -> None:
-            heading = "#" * min(level, 6)
-            lines.append(f"{heading} {_esc(page['name'])}")
-            owner = maps["member"].get(page.get("owned_by", ""), page.get("owned_by", "?")[:8])
-            raw_access = page.get("access")
-            access = "public" if raw_access == 0 or raw_access is None else f"access={raw_access}"
-            updated = page.get("updated_at", "")[:10]
-            lines.append(f"Owner: {owner} | Access: {access} | Updated: {updated}")
-            lines.append("")
-            content = html_to_text(page.get("description_html", "") or "")
-            if content:
-                lines.append(content)
-                lines.append("")
-            for child in sorted(page_children.get(page["id"], []), key=lambda p: p["name"]):
-                _render_page(child, level + 1)
-
-        for page in sorted(top_pages, key=lambda p: p["name"]):
-            _render_page(page)
 
     # Work Items — split into top-level and children
     item_ids = {item["id"] for item in work_items}
@@ -450,6 +411,51 @@ def render_markdown(data: dict, maps: dict, warnings: list[str],
     return "\n".join(lines) + "\n"
 
 
+def render_pages_md(pages: list, maps: dict, workspace: str, project_id: str) -> str:
+    """Render project pages as a standalone markdown file (separate from snapshot)."""
+    lines: list[str] = []
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    lines.append("# Plane Pages")
+    lines.append(f"Generated: {now} | Workspace: {workspace} | Project: {project_id[:8]}...")
+    lines.append(f"Pages: {len(pages)}")
+    lines.append("")
+
+    lines.append("## Pages")
+    lines.append("")
+
+    # Build parent→children map
+    page_children: dict[str, list[dict]] = {}
+    top_pages: list[dict] = []
+    for page in pages:
+        pid = page.get("parent_id")
+        if pid:
+            page_children.setdefault(pid, []).append(page)
+        else:
+            top_pages.append(page)
+
+    def _render_page(page: dict, level: int = 3) -> None:
+        heading = "#" * min(level, 6)
+        lines.append(f"{heading} {_esc(page['name'])}")
+        owner = maps["member"].get(page.get("owned_by", ""), page.get("owned_by", "?")[:8])
+        raw_access = page.get("access")
+        access = "public" if raw_access == 0 or raw_access is None else f"access={raw_access}"
+        updated = page.get("updated_at", "")[:10]
+        lines.append(f"Owner: {owner} | Access: {access} | Updated: {updated}")
+        lines.append("")
+        content = html_to_text(page.get("description_html", "") or "")
+        if content:
+            lines.append(content)
+            lines.append("")
+        for child in sorted(page_children.get(page["id"], []), key=lambda p: p["name"]):
+            _render_page(child, level + 1)
+
+    for page in sorted(top_pages, key=lambda p: p["name"]):
+        _render_page(page)
+
+    return "\n".join(lines) + "\n"
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -472,7 +478,7 @@ def main():
     parser.add_argument("--descriptions", action="store_true",
                         help="Include work item descriptions in output")
     parser.add_argument("--pages", action="store_true",
-                        help="Include project pages with content in output")
+                        help="Export project pages with content to a separate <output>.pages.md file")
     parser.add_argument("--intake", action="store_true",
                         help="Include intake items (requires intake enabled on project)")
     parser.add_argument("-o", "--output", type=Path, default=None,
@@ -551,11 +557,22 @@ def main():
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(md, encoding="utf-8")
 
+    # Pages go to a separate file (<output>.pages.md), not the main snapshot
+    pages = data.get("pages", [])
+    pages_path = None
+    if pages:
+        pages_path = args.output.with_name(args.output.stem + ".pages" + args.output.suffix)
+        pages_path.write_text(
+            render_pages_md(pages, maps, args.workspace, args.project),
+            encoding="utf-8")
+
     print(f"Done! Snapshot saved to {args.output}", file=sys.stderr)
+    if pages_path:
+        print(f"  Pages saved to {pages_path}", file=sys.stderr)
     parts = [f"{len(data['work_items'])} items",
              f"{len(data['modules'])} modules"]
-    if data.get("pages"):
-        parts.append(f"{len(data['pages'])} pages")
+    if pages:
+        parts.append(f"{len(pages)} pages → {pages_path.name}")
     if data.get("intake"):
         parts.append(f"{len(data['intake'])} intake")
     parts.append(f"{len(warnings)} warnings")
