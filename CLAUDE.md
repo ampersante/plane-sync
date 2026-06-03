@@ -70,6 +70,7 @@
 | Новая фича / изменение скрипта | `session-handoff.md` → целевой код → реализация → обновить `tasks.md` и `decisions.md` |
 | Баг / что-то сломалось | `session-handoff.md` (known limitations) → воспроизвести → починить |
 | Тестирование на проекте | Использовать `--profile` из `profiles.json` (см. ниже) |
+| «Что изменилось с прошлого snapshot» | `plane_diff.py old.md new.md` (сравнение двух snapshot.md) |
 | Вопрос «почему так» | `decisions.md` |
 | Новый проект-профиль | Добавить в `profiles.json`, не менять скрипт |
 
@@ -80,7 +81,8 @@
 | `plane_api.py` | Общий API-слой: auth, retry, rate limit, profiles (используется всеми скриптами) |
 | `plane_snapshot.py` | Read: выгрузка snapshot из Plane API в markdown |
 | `plane_fetch.py` | Fetch: гранулярный запрос данных одного айтема (work item, page, module) |
-| `plane_write.py` | Write: создание work items в Plane из markdown-файла |
+| `plane_write.py` | Write: создание/изменение work items, модулей, pages, intake из markdown-файла |
+| `plane_diff.py` | Diff: сравнение двух snapshot.md по work items (added/removed/changed), stdlib-only, без API |
 | `profiles.json` | Профили проектов для тестирования и запуска (gitignored, создаётся из `profiles.example.json`) |
 | `tasks.md` | Backlog задач на доработку |
 | `decisions.md` | Журнал ключевых решений |

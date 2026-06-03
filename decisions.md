@@ -92,3 +92,9 @@
 **Решение**: `plane_snapshot.py --pages` пишет страницы в ОТДЕЛЬНЫЙ файл `<output>.pages.md` (напр. `snapshot.pages.md`), а не в общий snapshot. Из общего `snapshot.md` секция Pages убрана. Рендер вынесен в standalone `render_pages_md()` со своей шапкой `# Plane Pages`.
 **Почему**: pages — это диздоки/документация, часто большие; в общем snapshot они раздували файл и мешали работе с work items. Пользователь работает с задачами и документами как с разными сущностями. Разделение держит snapshot компактным, а pages — отдельным самодостаточным документом.
 **Следствие**: имя файла = `output.stem + ".pages" + output.suffix`. `--pages` остаётся opt-in (N+1 за контентом не изменился). `plane_fetch.py --page` и write `## Pages` не затронуты — только snapshot. Обновлён алгоритм в CLAUDE.md (для поиска диздоков смотреть `*.pages.md`).
+
+## DEC-015 — Diff на уровне markdown, отдельный plane_diff.py (2026-06-03)
+
+**Решение**: `plane_diff.py old.md new.md` сравнивает два snapshot.md по work items (match по ID), вывод — markdown (Added/Removed/Changed) или `--json`. Сравнение чисто текстовое — парсит markdown-таблицы, БЕЗ API-вызовов. Свой мини-парсер таблиц внутри (не импортирует `plane_write.py` и не зависит от `plane_api.py`).
+**Почему**: snapshot.md — артефакт, хранимый в каждом проекте между сессиями (DEC-004). md-diff работает на исторических снимках, не требует API (можно сравнить вчерашний и сегодняшний файлы офлайн). Отдельный скрипт согласуется с архитектурой (snapshot/fetch/write — каждый свой файл).
+**Следствие**: детектор таблиц — по заголовку `id | name | state | priority` (ловит Top-level и Children, отсекает Modules/Intake/Relations). Labels/assignees нормализуются как множества (порядок не даёт ложных диффов). Сопоставление по ID: переименование = changed name, не add/remove. Warning при разных Project/PREFIX в шапках. Scope v1 — только work items (modules/intake можно добавить тем же паттерном).
