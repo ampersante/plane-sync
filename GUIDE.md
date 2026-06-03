@@ -132,12 +132,26 @@ python3 plane_snapshot.py --profile my-project
 # С описаниями задач
 python3 plane_snapshot.py --profile my-project --descriptions
 
+# С заявками из Intake (очередь триажа)
+python3 plane_snapshot.py --profile my-project --intake
+
+# Выгрузить страницы проекта в отдельный файл
+python3 plane_snapshot.py --profile my-project --pages
+
 # Посмотреть одну задачу
 python3 plane_fetch.py --profile my-project 108
+
+# Посмотреть страницу, модуль или заявку
+python3 plane_fetch.py --profile my-project --page "Название"
+python3 plane_fetch.py --profile my-project --module "Sprint 4"
+python3 plane_fetch.py --profile my-project --intake 486
 
 # Создать задачи из файла (сначала превью, потом применить)
 python3 plane_write.py --profile my-project -i tasks.md
 python3 plane_write.py --profile my-project -i tasks.md --execute
+
+# Сравнить два снимка (что изменилось)
+python3 plane_diff.py old_snapshot.md new_snapshot.md
 
 # Сохранить в другое место
 python3 plane_snapshot.py --profile my-project -o ~/Desktop/snapshot.md
