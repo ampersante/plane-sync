@@ -1,7 +1,7 @@
 # Session Handoff
 
 Статус: active
-Обновлено: 2026-06-03 (сессия 3)
+Обновлено: 2026-06-04 (сессия 3, save-session)
 
 Нулевая точка входа между сессиями. Читать первым делом чтобы понять где остановились.
 
@@ -32,6 +32,16 @@ Ad hoc инструмент для выгрузки snapshot'ов из Plane (pl
 - Добавлена строка `Sections:` в шапку snapshot — перечень секций файла для навигации (2026-05-05).
 - Module CRUD и Pages (create + read) добавлены и протестированы (2026-04-27).
 - Snapshot поддерживает `--pages` flag для выгрузки pages с контентом и иерархией.
+
+## Следующий шаг
+
+Backlog (в порядке приоритета как обсуждалось):
+1. **Оптимизация relations** — ускорить N+1 (~2.5 мин). Исследовать batch/project-level endpoint в Plane API.
+2. **Intake status changes** — смена статуса триажа. Требует разбора исходников `makeplane/plane` на GitHub: найти рабочий path для status-endpoint.
+3. **Intake delete** — action=delete в `## Intake`.
+4. **Интеграция с plane-lean-edit / plane-transfer routing**.
+
+Рабочий профиль для тестирования: `--profile test` (TESTPROJEC, bigbowls workspace).
 
 ## Известные ограничения
 
