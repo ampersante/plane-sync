@@ -28,6 +28,8 @@ from plane_api import (
 
 _UUID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.I)
 
+INTAKE_STATUS = {-2: "pending", -1: "rejected", 0: "snoozed", 1: "accepted", 2: "duplicate"}
+
 
 def is_uuid(s: str) -> bool:
     return bool(_UUID_RE.match(s))
@@ -113,6 +115,46 @@ def resolve_module(name_or_uuid: str) -> str:
         sys.exit(1)
 
     print(f"Error: No module matching '{name_or_uuid}' found.", file=sys.stderr)
+    sys.exit(1)
+
+
+def resolve_intake(query: str) -> dict:
+    """Resolve an intake item by name or sequence number. Returns the full intake object.
+
+    The list endpoint already embeds issue_detail, so no per-item retrieve is needed
+    (GET intake-issues/{id}/ returns 404 anyway).
+    """
+    print(f"Resolving intake item '{query}'...", file=sys.stderr)
+    items = api_get_paginated("intake-issues/")
+    if not items:
+        print("Error: No intake items found (intake may be disabled for this project).", file=sys.stderr)
+        sys.exit(1)
+
+    # Sequence number match (e.g. "486")
+    if query.strip().isdigit():
+        seq = int(query.strip())
+        for it in items:
+            if it.get("issue_detail", {}).get("sequence_id") == seq:
+                return it
+        print(f"Error: No intake item with sequence #{seq} found.", file=sys.stderr)
+        sys.exit(1)
+
+    q = query.lower()
+    # Exact name match
+    for it in items:
+        if it.get("issue_detail", {}).get("name", "").lower() == q:
+            return it
+    # Partial name match
+    matches = [it for it in items if q in it.get("issue_detail", {}).get("name", "").lower()]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        names = ", ".join(f'"{m["issue_detail"]["name"]}"' for m in matches[:5])
+        print(f"Error: Multiple intake items match '{query}': {names}", file=sys.stderr)
+        print("Use a more specific name or the sequence number.", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Error: No intake item matching '{query}' found.", file=sys.stderr)
     sys.exit(1)
 
 
@@ -439,6 +481,60 @@ def render_module_md(data: dict) -> str:
     return "\n".join(lines)
 
 
+def render_intake_md(intake: dict) -> str:
+    """Render an intake item as markdown."""
+    detail = intake.get("issue_detail", {})
+    seq = detail.get("sequence_id", "?")
+    name = detail.get("name", "Untitled")
+
+    lines = [f"# Intake #{seq}: {name}"]
+    lines.append("")
+    lines.append("| Field | Value |")
+    lines.append("|---|---|")
+
+    status = intake.get("status")
+    if status is not None:
+        lines.append(f"| Status | {INTAKE_STATUS.get(status, status)} |")
+
+    state = detail.get("state")
+    if isinstance(state, dict) and state.get("name"):
+        lines.append(f"| State | {state['name']} |")
+
+    priority = detail.get("priority")
+    if priority and priority != "none":
+        lines.append(f"| Priority | {priority} |")
+
+    source = intake.get("source")
+    if source:
+        lines.append(f"| Source | {source} |")
+
+    source_email = intake.get("source_email")
+    if source_email:
+        lines.append(f"| Source email | {source_email} |")
+
+    snoozed = intake.get("snoozed_till")
+    if snoozed:
+        lines.append(f"| Snoozed till | {snoozed[:10]} |")
+
+    created = intake.get("created_at", "")[:10]
+    updated = intake.get("updated_at", "")[:10]
+    if created:
+        lines.append(f"| Created | {created} |")
+    if updated:
+        lines.append(f"| Updated | {updated} |")
+
+    lines.append("")
+
+    desc = html_to_text(detail.get("description_html", "") or "")
+    if desc:
+        lines.append("## Description")
+        lines.append("")
+        lines.append(desc)
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 # ── Main ───────────────────────────────────────────────────────────────────
 
 def main():
@@ -450,6 +546,7 @@ def main():
   python3 plane_fetch.py --profile my-project 108 --no-comments
   python3 plane_fetch.py --profile my-project --page "Meeting Notes"
   python3 plane_fetch.py --profile my-project --module "Sprint 4"
+  python3 plane_fetch.py --profile my-project --intake "Bug report"
 """)
     parser.add_argument("identifier", nargs="?", default=None,
                         help="Work item ID (e.g. CT-108 or 108)")
@@ -467,6 +564,8 @@ def main():
                         help="Fetch a page by name or UUID")
     parser.add_argument("--module", metavar="NAME_OR_UUID",
                         help="Fetch a module by name or UUID")
+    parser.add_argument("--intake", metavar="NAME_OR_SEQ",
+                        help="Fetch an intake item by name or sequence number")
     parser.add_argument("--uuid", metavar="UUID",
                         help="Fetch a work item by UUID directly (skip resolution)")
 
@@ -502,19 +601,20 @@ def main():
         parser.print_usage(sys.stderr)
         sys.exit(1)
 
-    # Validate selector: exactly one of identifier, --page, --module, --uuid
+    # Validate selector: exactly one of identifier, --page, --module, --intake, --uuid
     selectors = sum([
         args.identifier is not None,
         args.page is not None,
         args.module is not None,
+        args.intake is not None,
         args.uuid is not None,
     ])
     if selectors == 0:
-        print("Error: Specify an item (CT-108), --page, --module, or --uuid.", file=sys.stderr)
+        print("Error: Specify an item (CT-108), --page, --module, --intake, or --uuid.", file=sys.stderr)
         parser.print_usage(sys.stderr)
         sys.exit(1)
     if selectors > 1:
-        print("Error: Use only one selector (identifier, --page, --module, --uuid).", file=sys.stderr)
+        print("Error: Use only one selector (identifier, --page, --module, --intake, --uuid).", file=sys.stderr)
         sys.exit(1)
 
     # Load .env
@@ -546,6 +646,13 @@ def main():
                              indent=2, ensure_ascii=False))
         else:
             print(render_module_md(data))
+
+    elif args.intake:
+        intake = resolve_intake(args.intake)
+        if args.json:
+            print(json.dumps(intake, indent=2, ensure_ascii=False))
+        else:
+            print(render_intake_md(intake))
 
     else:
         # Work item

@@ -29,9 +29,13 @@ from plane_api import (
 )
 
 
+INTAKE_STATUS = {-2: "pending", -1: "rejected", 0: "snoozed", 1: "accepted", 2: "duplicate"}
+
+
 # ── Data Fetching ────────────────────────────────────────────────────────────
 
-def fetch_all_data(include_descriptions: bool, include_pages: bool = False) -> dict:
+def fetch_all_data(include_descriptions: bool, include_pages: bool = False,
+                   include_intake: bool = False) -> dict:
     """Fetch all project data from Plane API."""
     print("Fetching states...", file=sys.stderr)
     states = api_get_list("states/")
@@ -98,6 +102,28 @@ def fetch_all_data(include_descriptions: bool, include_pages: bool = False) -> d
             time.sleep(0.3)
         print(f"  Fetched content for {len(pages)} pages", file=sys.stderr)
 
+    # Fetch intake items (opt-in). The list endpoint embeds issue_detail, so a
+    # single paginated call is enough — no per-item retrieve needed.
+    intake: list[dict] = []
+    if include_intake:
+        print("Fetching intake items...", file=sys.stderr)
+        # First page is non-critical so a disabled-intake 400 degrades gracefully.
+        probe = api_get("intake-issues/", params={"per_page": "100"}, critical=False)
+        results = probe.get("results", probe.get("result", []))
+        if isinstance(results, list):
+            intake.extend(results)
+            # Follow pagination if more pages exist.
+            params = {"per_page": "100"}
+            while probe.get("next_page_results") and probe.get("next_cursor"):
+                params["cursor"] = probe["next_cursor"]
+                probe = api_get("intake-issues/", params=params, critical=False)
+                more = probe.get("results", probe.get("result", []))
+                if isinstance(more, list):
+                    intake.extend(more)
+                else:
+                    break
+        print(f"  Got {len(intake)} intake items", file=sys.stderr)
+
     return {
         "states": states,
         "labels": labels,
@@ -108,6 +134,7 @@ def fetch_all_data(include_descriptions: bool, include_pages: bool = False) -> d
         "relations": relations,
         "include_descriptions": include_descriptions,
         "pages": pages,
+        "intake": intake,
     }
 
 
@@ -221,10 +248,13 @@ def render_markdown(data: dict, maps: dict, warnings: list[str],
     lines.append(f"# Plane Snapshot")
     lines.append(f"Generated: {now} | Workspace: {workspace} | Project: {project_id[:8]}... ({id_prefix})")
     pages = data.get("pages", [])
+    intake = data.get("intake", [])
     header_parts = [f"Items: {len(work_items)}", f"Relations: {total_relations}",
                     f"Modules: {len(data['modules'])}"]
     if pages:
         header_parts.append(f"Pages: {len(pages)}")
+    if intake:
+        header_parts.append(f"Intake: {len(intake)}")
     header_parts.append(f"Warnings: {len(warnings)}")
     lines.append(" | ".join(header_parts))
     sections = ["States", "Labels", "Work Items", "Relations"]
@@ -233,6 +263,8 @@ def render_markdown(data: dict, maps: dict, warnings: list[str],
     sections.append("Modules")
     if pages:
         sections.extend(["Pages", "Page Contents"])
+    if intake:
+        sections.append("Intake")
     lines.append(f"Sections: {' → '.join(sections)}")
     lines.append("")
 
@@ -386,6 +418,22 @@ def render_markdown(data: dict, maps: dict, warnings: list[str],
                 lines.append(desc)
                 lines.append("")
 
+    # Intake (opt-in)
+    if intake:
+        lines.append("## Intake")
+        lines.append("| Seq | Name | Status | Priority | State |")
+        lines.append("|---|---|---|---|---|")
+        for it in sorted(intake, key=lambda x: x.get("issue_detail", {}).get("sequence_id", 0)):
+            detail = it.get("issue_detail", {})
+            seq = detail.get("sequence_id", "")
+            name = _esc(detail.get("name", ""))
+            status = INTAKE_STATUS.get(it.get("status"), it.get("status", ""))
+            priority = detail.get("priority", "")
+            state = detail.get("state", {})
+            state_name = state.get("name", "") if isinstance(state, dict) else ""
+            lines.append(f"| {seq} | {name} | {status} | {priority} | {state_name} |")
+        lines.append("")
+
     # Warnings
     if warnings:
         lines.append("## Warnings")
@@ -425,6 +473,8 @@ def main():
                         help="Include work item descriptions in output")
     parser.add_argument("--pages", action="store_true",
                         help="Include project pages with content in output")
+    parser.add_argument("--intake", action="store_true",
+                        help="Include intake items (requires intake enabled on project)")
     parser.add_argument("-o", "--output", type=Path, default=None,
                         help="Output file path (default: ./snapshot.md)")
     parser.add_argument("--env", type=Path, default=None,
@@ -474,7 +524,7 @@ def main():
     print(f"  Output:    {args.output}", file=sys.stderr)
     print("", file=sys.stderr)
 
-    data = fetch_all_data(args.descriptions, args.pages)
+    data = fetch_all_data(args.descriptions, args.pages, args.intake)
 
     # Auto-detect prefix from project identifier if not given
     if not id_prefix:
@@ -506,6 +556,8 @@ def main():
              f"{len(data['modules'])} modules"]
     if data.get("pages"):
         parts.append(f"{len(data['pages'])} pages")
+    if data.get("intake"):
+        parts.append(f"{len(data['intake'])} intake")
     parts.append(f"{len(warnings)} warnings")
     print(f"  {', '.join(parts)}", file=sys.stderr)
 
