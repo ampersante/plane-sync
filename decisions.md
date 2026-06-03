@@ -86,3 +86,9 @@
 - **Edit полей**: intake-айтем хранит UUID реального work item в поле `issue` → правка name/desc/priority идёт через штатный `PATCH work-items/{issue_uuid}/` (200). Отдельного intake-update под issue-поля нет (`PATCH intake-issues/{id}/` → 404).
 - **Status (accept/reject/snooze/duplicate) отложен**: `PATCH intake-issues/{id}/{status:N}` → "Use the intake status endpoint", а сам `intake-issues/{id}/status/` отвергает все методы (405/404). Endpoint нестабилен/недокументирован. Status enum для read-рендера: `-2` pending, `-1` rejected, `0` snoozed, `1` accepted, `2` duplicate.
 **Следствие**: `description_html` (camelCase, как work items) → `html_to_text` применим. Read list самодостаточен — быстро. Секции опциональны, обратная совместимость сохранена. Порядок write: modules → pages → intake → items.
+
+## DEC-014 — Pages в отдельный файл при --pages (2026-06-03)
+
+**Решение**: `plane_snapshot.py --pages` пишет страницы в ОТДЕЛЬНЫЙ файл `<output>.pages.md` (напр. `snapshot.pages.md`), а не в общий snapshot. Из общего `snapshot.md` секция Pages убрана. Рендер вынесен в standalone `render_pages_md()` со своей шапкой `# Plane Pages`.
+**Почему**: pages — это диздоки/документация, часто большие; в общем snapshot они раздували файл и мешали работе с work items. Пользователь работает с задачами и документами как с разными сущностями. Разделение держит snapshot компактным, а pages — отдельным самодостаточным документом.
+**Следствие**: имя файла = `output.stem + ".pages" + output.suffix`. `--pages` остаётся opt-in (N+1 за контентом не изменился). `plane_fetch.py --page` и write `## Pages` не затронуты — только snapshot. Обновлён алгоритм в CLAUDE.md (для поиска диздоков смотреть `*.pages.md`).

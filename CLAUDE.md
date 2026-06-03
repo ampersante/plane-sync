@@ -38,7 +38,8 @@
    - **Нет snapshot** → выгрузи: `plane_snapshot.py --profile X --pages`
    - **Старше 12 часов** (проверь дату в шапке файла или mtime) → перевыгрузи
    - **Свежий** → используй как есть
-4. **Ищи в snapshot.** Pages, work items, modules — всё там с названиями. Сопоставляй запрос пользователя с названиями по смыслу, а не по точному совпадению: "кор геймплей" = "Core Gameplay Design Document", "задачи по монетизации" = work items с лейблом Monetization, и т.д.
+   - `--pages` пишет страницы в ОТДЕЛЬНЫЙ файл `<output>.pages.md` (напр. `snapshot.pages.md`), не в общий snapshot. Для запросов про диздоки/страницы — обеспечь и проверь именно этот файл.
+4. **Ищи в snapshot.** Work items, modules — в общем `snapshot.md`; pages — в `<output>.pages.md`. Сопоставляй запрос пользователя с названиями по смыслу, а не по точному совпадению: "кор геймплей" = "Core Gameplay Design Document" (ищи в `*.pages.md`), "задачи по монетизации" = work items с лейблом Monetization (в `snapshot.md`), и т.д.
 5. **Для деталей — `plane_fetch.py`.** Snapshot содержит список и метаданные, но не полные описания/комментарии. Найдя нужную сущность в snapshot, бери её точное название и передавай в fetch: `plane_fetch.py --page "Core Gameplay Design Document"`.
 6. **Если запрос составной** ("найди диздок и связанные задачи") — выполни по шагам: найди основную сущность в snapshot, дотяни детали через fetch, потом найди связанные items.
 
