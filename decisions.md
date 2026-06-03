@@ -73,3 +73,16 @@
 **Решение**: `html_to_text()` в `plane_api.py` — конвертирует `description_html` из Plane API в чистый текст с лёгким markdown (bold, italic, списки, заголовки, ссылки). Кастомные теги Plane (`<image-component>`) → `[image]`.
 **Почему**: Plane API отдаёт описания только как HTML с editor-классами и data-id атрибутами. Без конвертера snapshot/fetch содержал raw HTML, непригодный для чтения.
 **Следствие**: stdlib only (`html.parser.HTMLParser`). Применяется в 5 точках вывода (snapshot: pages + descriptions; fetch: description + page content + comments). Write path не затронут — он отправляет HTML в API.
+
+## DEC-013 — Intake: read + create + edit, асимметричные endpoint'ы (2026-06-03)
+
+**Решение**: поддержка Plane Intake в трёх скриптах. Read: snapshot `--intake` flag + fetch `--intake "name"|<seq>`. Write: `## Intake` таблица (create) + edit полей (name/description/priority). Status триажа и delete — НЕ поддержаны (вынесены в backlog).
+**Почему** (API quirks, выяснены зондированием живого API — доку расходится с реальностью):
+- Базовый путь — `intake-issues/`, НЕ `intake-work-items/` (последний возвращает `{}`).
+- Требует `intake_view:true` на проекте, иначе POST → 400 "Intake is not enabled".
+- **List `GET intake-issues/` уже встраивает полный `issue_detail`** (name, description_html, priority, sequence_id, state) — N+1 retrieve НЕ нужен. Это дешевле, чем relations/pages.
+- **`GET intake-issues/{id}/` (retrieve по id) → 404.** Одиночный fetch делается через list + фильтр по name/seq.
+- **Create**: `POST intake-issues/` с телом `{"issue": {...}}` (данные вложены под `issue`). Стартовый `status=-2` (pending), state="Triage".
+- **Edit полей**: intake-айтем хранит UUID реального work item в поле `issue` → правка name/desc/priority идёт через штатный `PATCH work-items/{issue_uuid}/` (200). Отдельного intake-update под issue-поля нет (`PATCH intake-issues/{id}/` → 404).
+- **Status (accept/reject/snooze/duplicate) отложен**: `PATCH intake-issues/{id}/{status:N}` → "Use the intake status endpoint", а сам `intake-issues/{id}/status/` отвергает все методы (405/404). Endpoint нестабилен/недокументирован. Status enum для read-рендера: `-2` pending, `-1` rejected, `0` snoozed, `1` accepted, `2` duplicate.
+**Следствие**: `description_html` (camelCase, как work items) → `html_to_text` применим. Read list самодостаточен — быстро. Секции опциональны, обратная совместимость сохранена. Порядок write: modules → pages → intake → items.

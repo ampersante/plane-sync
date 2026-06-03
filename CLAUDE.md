@@ -25,6 +25,7 @@
 |---|---|---|
 | диздок, дизайн-документ, ГДД, документ, страница | **page** | `plane_fetch.py --page "название"` |
 | задача, тикет, баг, фича, итем, work item | **work item** | `plane_fetch.py PRJ-123` |
+| заявка, входящая, intake, inbox, очередь триажа | **intake** | `plane_fetch.py --intake "название"` или `--intake <seq>` |
 | спринт, цикл | **cycle** | `plane_snapshot.py` (секция Cycles) |
 | модуль, эпик, группа задач | **module** | `plane_fetch.py --module "название"` |
 | все задачи, полный список, snapshot | **snapshot** | `plane_snapshot.py --profile X` |
@@ -32,7 +33,7 @@
 ### Алгоритм обработки запроса
 
 1. **Определи профиль.** Если в `profiles.json` один профиль — используй его. Если несколько — спроси какой.
-2. **Определи тип сущности** по словарю выше. Если неоднозначно — спроси ("ты имеешь в виду page или work item?"), не гадай.
+2. **Определи тип сущности** по словарю выше. Если неоднозначно — спроси ("ты имеешь в виду page или work item?"), не гадай. Intake (заявки) — отдельная очередь триажа, не путать с work items; в snapshot попадает только с флагом `--intake`.
 3. **Обеспечь актуальный snapshot.** Проверь `snapshot.md` профиля:
    - **Нет snapshot** → выгрузи: `plane_snapshot.py --profile X --pages`
    - **Старше 12 часов** (проверь дату в шапке файла или mtime) → перевыгрузи
@@ -46,6 +47,8 @@
 | Запрос пользователя | Что делать |
 |---|---|
 | "найди диздок по кор геймплею" | `plane_fetch.py --profile X --page "кор геймплей"` |
+| "что в заявке про краш" | `plane_fetch.py --profile X --intake "краш"` |
+| "покажи входящие / очередь intake" | `plane_snapshot.py --profile X --intake` (секция Intake) |
 | "покажи задачи из модуля Sprint 4" | `plane_fetch.py --profile X --module "Sprint 4"` |
 | "что в задаче CT-108" | `plane_fetch.py --profile X CT-108` |
 | "выгрузи все задачи" | `plane_snapshot.py --profile X` |

@@ -102,6 +102,33 @@ class ResolvedPage:
 
 
 @dataclass
+class IntakeSpec:
+    """Parsed from markdown ## Intake table. Create + edit (name/desc/priority) only.
+
+    Status changes (accept/reject/snooze) are not supported — the Plane intake
+    status endpoint is unstable. See decisions.md.
+    """
+    action: str = "create"                          # "create" or "update"
+    existing_id: str = ""                            # intake sequence number for update (e.g. "486")
+    name: str = ""
+    priority: str = ""                               # urgent/high/medium/low/none
+    description_html: str = ""
+    line_number: int = 0
+
+
+@dataclass
+class ResolvedIntake:
+    """Ready for API call. Create → POST intake-issues/; update → PATCH work-items/{issue_uuid}/."""
+    spec: IntakeSpec
+    api_body: dict = field(default_factory=dict)
+    issue_uuid: str | None = None                    # work-item UUID for update PATCH
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    created_id: str | None = None
+    skipped: bool = False
+
+
+@dataclass
 class ResolvedItem:
     """Ready for API call (POST/PATCH/DELETE)."""
     spec: WorkItemSpec
@@ -431,6 +458,48 @@ def parse_pages_table(section_text: str, section_start: int) -> list[PageSpec]:
     return specs
 
 
+def parse_intake_table(section_text: str, section_start: int) -> list[IntakeSpec]:
+    """Parse ## Intake section into IntakeSpec list."""
+    headers, rows = _parse_table(section_text)
+    if not headers:
+        print("Error: No table found in ## Intake section.", file=sys.stderr)
+        sys.exit(1)
+
+    col = {h: i for i, h in enumerate(headers)}
+    specs: list[IntakeSpec] = []
+
+    for cells, line_off in rows:
+        while len(cells) < len(headers):
+            cells.append("")
+
+        action = cells[col.get("action", -1)].strip().lower() if "action" in col else "create"
+        if action not in ("create", "update"):
+            action = "create"
+
+        existing_id = cells[col.get("id", -1)].strip() if "id" in col else ""
+        name = _unesc(cells[col.get("name", -1)]).strip() if "name" in col else ""
+
+        # For update, need existing_id; for create, need name
+        if action == "update" and not existing_id:
+            continue
+        if action == "create" and not name:
+            continue
+
+        priority_raw = cells[col.get("priority", -1)].strip().lower() if "priority" in col else ""
+        priority = priority_raw if priority_raw in ("urgent", "high", "medium", "low", "none") else ""
+
+        spec = IntakeSpec(
+            action=action,
+            existing_id=existing_id,
+            name=name,
+            priority=priority,
+            line_number=section_start + line_off,
+        )
+        specs.append(spec)
+
+    return specs
+
+
 def parse_relations(section_text: str, specs: list[WorkItemSpec]) -> None:
     """Parse ## Relations table and attach to matching specs."""
     headers, rows = _parse_table(section_text)
@@ -479,16 +548,17 @@ def parse_subsections(section_text: str) -> dict[str, str]:
     return result
 
 
-def parse_input(md_text: str) -> tuple[list[WorkItemSpec], list[ModuleSpec], list[PageSpec]]:
-    """Parse markdown input file into work item specs, module specs, and page specs."""
+def parse_input(md_text: str) -> tuple[list[WorkItemSpec], list[ModuleSpec], list[PageSpec], list[IntakeSpec]]:
+    """Parse markdown input file into work item, module, page, and intake specs."""
     sections = _split_sections(md_text)
 
     has_items = "items" in sections
     has_modules = "modules" in sections
     has_pages = "pages" in sections
+    has_intake = "intake" in sections
 
-    if not has_items and not has_modules and not has_pages:
-        print("Error: Need at least ## Items, ## Modules, or ## Pages section in input file.", file=sys.stderr)
+    if not has_items and not has_modules and not has_pages and not has_intake:
+        print("Error: Need at least ## Items, ## Modules, ## Pages, or ## Intake section in input file.", file=sys.stderr)
         sys.exit(1)
 
     # Parse modules
@@ -502,6 +572,12 @@ def parse_input(md_text: str) -> tuple[list[WorkItemSpec], list[ModuleSpec], lis
     if has_pages:
         page_text, page_start = sections["pages"]
         page_specs = parse_pages_table(page_text, page_start)
+
+    # Parse intake
+    intake_specs: list[IntakeSpec] = []
+    if has_intake:
+        intake_text, intake_start = sections["intake"]
+        intake_specs = parse_intake_table(intake_text, intake_start)
 
     # Parse items
     specs: list[WorkItemSpec] = []
@@ -552,7 +628,21 @@ def parse_input(md_text: str) -> tuple[list[WorkItemSpec], list[ModuleSpec], lis
                     content = f"<p>{content}</p>"
                 page_ref_map[ref].description_html = content
 
-    return specs, module_specs, page_specs
+    # Intake contents — keyed by intake ID (update) or name (create), case-insensitive
+    if "intake contents" in sections:
+        intake_key_map: dict[str, IntakeSpec] = {}
+        for s in intake_specs:
+            if s.existing_id:
+                intake_key_map[s.existing_id.strip().upper()] = s
+            if s.name:
+                intake_key_map[s.name.strip().upper()] = s
+        for ref, content in parse_subsections(sections["intake contents"][0]).items():
+            if ref in intake_key_map:
+                if not content.strip().startswith("<"):
+                    content = f"<p>{content}</p>"
+                intake_key_map[ref].description_html = content
+
+    return specs, module_specs, page_specs, intake_specs
 
 
 # ── Resolution ──────────────────────────────────────────────────────────────
@@ -874,6 +964,90 @@ def validate_pages(resolved_pages: list[ResolvedPage]) -> tuple[list[str], list[
     return errors, warnings
 
 
+def resolve_all_intake(intake_specs: list[IntakeSpec],
+                       intake_list: list[dict]) -> list[ResolvedIntake]:
+    """Resolve intake specs to API-ready form.
+
+    Create → body {"issue": {...}} for POST intake-issues/.
+    Update → flat body {...} for PATCH work-items/{issue_uuid}/ (resolved from intake_list).
+    """
+    # Map intake sequence_id → work-item UUID for update resolution
+    seq_to_issue: dict[str, str] = {}
+    for it in intake_list:
+        seq = it.get("issue_detail", {}).get("sequence_id")
+        if seq is not None and it.get("issue"):
+            seq_to_issue[str(seq)] = it["issue"]
+
+    resolved: list[ResolvedIntake] = []
+    for spec in intake_specs:
+        item = ResolvedIntake(spec=spec)
+
+        if spec.action == "update":
+            key = spec.existing_id.strip()
+            issue_uuid = seq_to_issue.get(key)
+            if issue_uuid:
+                item.issue_uuid = issue_uuid
+            else:
+                item.errors.append(f"Unknown intake item '{spec.existing_id}'")
+            # Build flat work-item PATCH body from changed fields
+            body: dict = {}
+            if spec.name:
+                body["name"] = spec.name
+            if spec.priority:
+                body["priority"] = spec.priority
+            if spec.description_html:
+                body["description_html"] = spec.description_html
+            item.api_body = body
+        else:
+            # Create — nested under "issue"
+            issue: dict = {"name": spec.name}
+            if spec.priority:
+                issue["priority"] = spec.priority
+            if spec.description_html:
+                issue["description_html"] = spec.description_html
+            item.api_body = {"issue": issue}
+
+        resolved.append(item)
+
+    return resolved
+
+
+def validate_intake(resolved_intake: list[ResolvedIntake],
+                    intake_list: list[dict]) -> tuple[list[str], list[str]]:
+    """Validate resolved intake items. Returns (fatal_errors, warnings)."""
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    # Duplicate names among creates
+    names = [r.spec.name.strip().lower() for r in resolved_intake
+             if r.spec.action == "create" and r.spec.name]
+    seen: set[str] = set()
+    for name in names:
+        if name in seen:
+            errors.append(f"Duplicate intake name '{name}'")
+        seen.add(name)
+
+    # update must have a field to change
+    for item in resolved_intake:
+        if item.spec.action == "update" and not item.api_body:
+            errors.append(f"Intake update '{item.spec.existing_id}' has no fields to change")
+
+    # Per-item errors
+    for item in resolved_intake:
+        for err in item.errors:
+            label = item.spec.existing_id or item.spec.name or "?"
+            errors.append(f"[intake:{label}] {err}")
+
+    # Warn if creating a name that already exists in intake
+    existing_names = {it.get("issue_detail", {}).get("name", "").strip().lower()
+                      for it in intake_list}
+    for item in resolved_intake:
+        if item.spec.action == "create" and item.spec.name.strip().lower() in existing_names:
+            warnings.append(f"Intake '{item.spec.name}' matches an existing intake item name")
+
+    return errors, warnings
+
+
 # ── Validation ──────────────────────────────────────────────────────────────
 
 def validate(resolved: list[ResolvedItem]) -> tuple[list[str], list[str]]:
@@ -955,6 +1129,7 @@ def check_duplicates(resolved: list[ResolvedItem], rmaps: dict,
 def print_plan(resolved: list[ResolvedItem],
                resolved_modules: list[ResolvedModule],
                resolved_pages: list[ResolvedPage],
+               resolved_intake: list[ResolvedIntake],
                execute: bool) -> None:
     """Print what will be done."""
     mode = "EXECUTE" if execute else "DRY RUN"
@@ -964,6 +1139,9 @@ def print_plan(resolved: list[ResolvedItem],
     mod_deletes = sum(1 for r in resolved_modules if r.spec.action == "delete" and not r.skipped)
 
     page_creates = sum(1 for r in resolved_pages if not r.skipped)
+
+    intake_creates = sum(1 for r in resolved_intake if r.spec.action == "create" and not r.skipped)
+    intake_updates = sum(1 for r in resolved_intake if r.spec.action == "update" and not r.skipped)
 
     creates = sum(1 for r in resolved if r.spec.action == "create" and not r.skipped)
     updates = sum(1 for r in resolved if r.spec.action == "update" and not r.skipped)
@@ -976,6 +1154,8 @@ def print_plan(resolved: list[ResolvedItem],
         print(f"  Modules — Create: {mod_creates} | Update: {mod_updates} | Delete: {mod_deletes}", file=sys.stderr)
     if resolved_pages:
         print(f"  Pages   — Create: {page_creates}", file=sys.stderr)
+    if resolved_intake:
+        print(f"  Intake  — Create: {intake_creates} | Update: {intake_updates}", file=sys.stderr)
     if resolved:
         print(f"  Items   — Create: {creates} | Update: {updates} | Delete: {deletes} | Skipped: {skipped}", file=sys.stderr)
     print(f"{'='*60}\n", file=sys.stderr)
@@ -1009,6 +1189,20 @@ def print_plan(resolved: list[ResolvedItem],
             parent = item.spec.parent_ref or ""
             has_content = "yes" if item.spec.description_html else "no"
             print(f"  {item.spec.ref:<12} {name:<40} {parent:<12}", file=sys.stderr)
+        print("", file=sys.stderr)
+
+    # Intake
+    if resolved_intake:
+        print("Intake:", file=sys.stderr)
+        print(f"  {'Action':<8} {'ID/Name':<40} {'Priority':<10}", file=sys.stderr)
+        print(f"  {'-'*8} {'-'*40} {'-'*10}", file=sys.stderr)
+        for item in resolved_intake:
+            label = (item.spec.existing_id or item.spec.name)[:40]
+            priority = item.spec.priority or ""
+            print(f"  {item.spec.action:<8} {label:<40} {priority:<10}", file=sys.stderr)
+            if item.spec.action == "update" and item.api_body:
+                fields = ", ".join(item.api_body.keys())
+                print(f"           Fields: {fields}", file=sys.stderr)
         print("", file=sys.stderr)
 
     # Items
@@ -1097,8 +1291,9 @@ def topological_sort_pages(resolved: list[ResolvedPage]) -> list[ResolvedPage]:
 def execute(resolved: list[ResolvedItem],
             resolved_modules: list[ResolvedModule],
             resolved_pages: list[ResolvedPage],
+            resolved_intake: list[ResolvedIntake],
             verbose: bool) -> None:
-    """Execute module + page + work item operations via Plane API."""
+    """Execute module + page + intake + work item operations via Plane API."""
 
     # ── Module CRUD (before work items) ─────────────────────────────────────
     created_modules: dict[str, str] = {}  # name.lower() → created UUID
@@ -1182,6 +1377,44 @@ def execute(resolved: list[ResolvedItem],
             temp_page_to_uuid[item.spec.ref.upper()] = item.created_id
             page_created_count += 1
             print(f"  [OK] Created page '{item.spec.name}'", file=sys.stderr)
+            time.sleep(0.3)
+
+    # ── Intake create + edit ────────────────────────────────────────────────
+    intake_active = [r for r in resolved_intake if not r.skipped]
+    intake_created_count = 0
+    intake_updated_count = 0
+
+    intake_creates = [r for r in intake_active if r.spec.action == "create"]
+    intake_updates = [r for r in intake_active if r.spec.action == "update"]
+
+    if intake_creates:
+        print(f"\nCreating {len(intake_creates)} intake items...", file=sys.stderr)
+        for item in intake_creates:
+            if verbose:
+                print(f"  [POST] intake-issues/ {item.api_body}", file=sys.stderr)
+            result = api_post("intake-issues/", item.api_body, critical=False)
+            if not result or "id" not in result:
+                print(f"  [FAIL] Intake '{item.spec.name}' — {result}", file=sys.stderr)
+                continue
+            item.created_id = result["id"]
+            intake_created_count += 1
+            print(f"  [OK] Created intake '{item.spec.name}'", file=sys.stderr)
+            time.sleep(0.3)
+
+    if intake_updates:
+        print(f"\nUpdating {len(intake_updates)} intake items...", file=sys.stderr)
+        for item in intake_updates:
+            if not item.issue_uuid:
+                print(f"  [SKIP] Intake '{item.spec.existing_id}': work item not resolved", file=sys.stderr)
+                continue
+            if verbose:
+                print(f"  [PATCH] work-items/{item.issue_uuid}/ {item.api_body}", file=sys.stderr)
+            result = api_patch(f"work-items/{item.issue_uuid}/", item.api_body, critical=False)
+            if result:
+                intake_updated_count += 1
+                print(f"  [OK] Updated intake '{item.spec.existing_id}': {', '.join(item.api_body.keys())}", file=sys.stderr)
+            else:
+                print(f"  [FAIL] Intake '{item.spec.existing_id}' — {result}", file=sys.stderr)
             time.sleep(0.3)
 
     # ── Work item CRUD ──────────────────────────────────────────────────────
@@ -1351,6 +1584,8 @@ def execute(resolved: list[ResolvedItem],
         print(f"  Modules  — Created: {mod_created_count} | Updated: {mod_updated_count} | Deleted: {mod_deleted_count}", file=sys.stderr)
     if page_active:
         print(f"  Pages    — Created: {page_created_count}", file=sys.stderr)
+    if intake_active:
+        print(f"  Intake   — Created: {intake_created_count} | Updated: {intake_updated_count}", file=sys.stderr)
     print(f"  Items    — Created: {created_count} | Updated: {updated_count} | Deleted: {deleted_count}", file=sys.stderr)
     print(f"  Relations: {rel_count} | Comments: {comment_count} | Links: {link_count}", file=sys.stderr)
     print(f"  Module assignments: {len(module_batches)} | Cycle assignments: {len(cycle_batches)}", file=sys.stderr)
@@ -1364,6 +1599,12 @@ def execute(resolved: list[ResolvedItem],
     if page_created_count:
         print(f"\nCreated pages:", file=sys.stderr)
         for r in page_active:
+            if r.created_id:
+                print(f"  '{r.spec.name}'", file=sys.stderr)
+
+    if intake_created_count:
+        print(f"\nCreated intake items:", file=sys.stderr)
+        for r in intake_active:
             if r.created_id:
                 print(f"  '{r.spec.name}'", file=sys.stderr)
 
@@ -1384,6 +1625,9 @@ def main():
   python3 plane_write.py --profile my-project -i tasks.md
   python3 plane_write.py --profile my-project -i tasks.md --execute
   python3 plane_write.py -w my-workspace -p <project-uuid> -i tasks.md --execute
+
+Input sections: ## Items, ## Modules, ## Pages, ## Intake (+ ## Descriptions,
+## Relations, ## Comments, ## Links, ## Page Contents, ## Intake Contents).
 """)
     parser.add_argument("--profile",
                         help="Named profile from profiles.json")
@@ -1445,7 +1689,7 @@ def main():
 
     # Parse input
     md_text = input_path.read_text(encoding="utf-8")
-    item_specs, module_specs, page_specs = parse_input(md_text)
+    item_specs, module_specs, page_specs, intake_specs = parse_input(md_text)
     parts_parsed = []
     if item_specs:
         parts_parsed.append(f"{len(item_specs)} items")
@@ -1453,6 +1697,8 @@ def main():
         parts_parsed.append(f"{len(module_specs)} modules")
     if page_specs:
         parts_parsed.append(f"{len(page_specs)} pages")
+    if intake_specs:
+        parts_parsed.append(f"{len(intake_specs)} intake")
     print(f"Parsed {', '.join(parts_parsed)} from input file", file=sys.stderr)
 
     # Fetch lookups and resolve
@@ -1470,6 +1716,16 @@ def main():
     resolved_pages = resolve_all_pages(page_specs)
     page_errors, page_warnings = validate_pages(resolved_pages)
 
+    # Resolve intake (fetch current intake list lazily, only when needed)
+    resolved_intake: list[ResolvedIntake] = []
+    intake_errors: list[str] = []
+    intake_warnings: list[str] = []
+    if intake_specs:
+        print("  Intake items...", file=sys.stderr)
+        intake_list = api_get_paginated("intake-issues/")
+        resolved_intake = resolve_all_intake(intake_specs, intake_list)
+        intake_errors, intake_warnings = validate_intake(resolved_intake, intake_list)
+
     # Resolve items (with pending module names from ## Modules creates)
     new_module_names = {s.name.strip().lower() for s in module_specs if s.action == "create" and s.name}
     resolved = resolve_all(item_specs, rmaps, new_module_names or None)
@@ -1478,14 +1734,14 @@ def main():
     item_errors, item_warnings = validate(resolved)
 
     # Merge errors/warnings
-    errors = mod_errors + page_errors + item_errors
-    warnings = mod_warnings + page_warnings + item_warnings
+    errors = mod_errors + page_errors + intake_errors + item_errors
+    warnings = mod_warnings + page_warnings + intake_warnings + item_warnings
 
     # Duplicate check (items only)
     dup_messages = check_duplicates(resolved, rmaps, args.allow_duplicates)
 
     # Print plan
-    print_plan(resolved, resolved_modules, resolved_pages, args.execute)
+    print_plan(resolved, resolved_modules, resolved_pages, resolved_intake, args.execute)
 
     if dup_messages:
         print(f"\nDuplicate detection:", file=sys.stderr)
@@ -1514,6 +1770,10 @@ def main():
         if md_count: parts.append(f"{md_count} modules deleted")
         pc = sum(1 for r in resolved_pages if not r.skipped)
         if pc: parts.append(f"{pc} pages created")
+        ic = sum(1 for r in resolved_intake if r.spec.action == "create" and not r.skipped)
+        iu = sum(1 for r in resolved_intake if r.spec.action == "update" and not r.skipped)
+        if ic: parts.append(f"{ic} intake created")
+        if iu: parts.append(f"{iu} intake updated")
         creates = sum(1 for r in resolved if r.spec.action == "create" and not r.skipped)
         updates = sum(1 for r in resolved if r.spec.action == "update" and not r.skipped)
         deletes = sum(1 for r in resolved if r.spec.action == "delete" and not r.skipped)
@@ -1524,8 +1784,8 @@ def main():
         print("Add --execute to apply these changes.", file=sys.stderr)
         return
 
-    # Execute (modules → pages → items)
-    execute(resolved, resolved_modules, resolved_pages, args.verbose)
+    # Execute (modules → pages → intake → items)
+    execute(resolved, resolved_modules, resolved_pages, resolved_intake, args.verbose)
 
 
 if __name__ == "__main__":
