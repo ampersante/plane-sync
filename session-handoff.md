@@ -1,7 +1,7 @@
 # Session Handoff
 
 Статус: active
-Обновлено: 2026-06-21 (сессия 6)
+Обновлено: 2026-06-21 (сессия 7)
 
 Нулевая точка входа между сессиями. Читать первым делом чтобы понять где остановились.
 
@@ -14,7 +14,7 @@ Ad hoc инструмент для выгрузки snapshot'ов из Plane (pl
 - **Read** (`plane_snapshot.py`): работает. Описания выводятся как чистый текст (без HTML). `--pages` теперь пишет страницы в ОТДЕЛЬНЫЙ файл `<output>.pages.md` (не в общий snapshot). `--intake` добавляет секцию Intake.
 - **Fetch** (`plane_fetch.py`): гранулярный запрос одного айтема (work item / page / module) со всеми данными (description, comments, relations, links). Output в stdout как markdown.
 - **Write** (`plane_write.py`): полный CRUD для work items + модулей + create pages + intake (create/edit). `## Modules`, `## Pages` / `## Page Contents`, `## Intake` / `## Intake Contents` секции. Pending-placeholder для новых модулей и subpages. Dry-run по умолчанию, `--execute` для применения.
-- **Intake** (заявки/триаж): read через snapshot `--intake` + fetch `--intake "name"|<seq>`; write — create + edit полей (name/desc/priority). Status триажа и delete отложены (см. tasks.md). Требует `intake_view:true` на проекте.
+- **Intake** (заявки/триаж): read через snapshot `--intake` + fetch `--intake "name"|<seq>`; write — полный набор: create, edit полей (name/desc/priority), смена триаж-статуса (колонка Status при action=update), delete. Требует `intake_view:true` на проекте.
 - **Diff** (`plane_diff.py`): сравнение двух snapshot.md по work items (added/removed/changed), markdown или `--json`. Stdlib-only, без API — парсит markdown-таблицы.
 - **Shared API** (`plane_api.py`): общий слой для всех скриптов (auth, retry, rate limit, profiles, GET/POST/PATCH).
 - Параметрический: через CLI аргументы или `--profile` из `profiles.json`.
@@ -22,6 +22,7 @@ Ad hoc инструмент для выгрузки snapshot'ов из Plane (pl
 
 ## На чём остановились
 
+- 2026-06-21 (сессия 7): **Intake status changes + delete**. `## Intake` в `plane_write.py`: добавлен `action=delete` и смена триаж-статуса колонкой `Status` при `action=update` (accepted/rejected/snoozed/duplicate/pending). Зондированием снята блокировка DEC-013: причина была в **неверном id** — оба endpoint резолвят intake по work-item uuid (`it["issue"]`), не по intake-issue id. Status: `PATCH intake-issues/{work_uuid}/status/ {"status":N}`; delete: `DELETE intake-issues/{work_uuid}/`. Переиспользован существующий `seq_to_issue` (отдельная мапа не нужна). Протестировано end-to-end на `test`: accept #486 + restore, delete #487 (артефакт прибран). Регрессия create/edit-полей чистая. См. DEC-018. **Не закоммичено.**
 - 2026-06-21 (сессия 6): **Оптимизация relations + pages (конкурентный фетч) + фикс 429-retry**. Оба N+1 цикла в `plane_snapshot.py` (relations, `--pages` content) переведены на `ThreadPoolExecutor` (хелпер `_fetch_concurrent`, `FETCH_WORKERS=3`), убраны `sleep(0.3)`. Batch-эндпоинта для relations в API нет (зондировано). Параллелизм вскрыл баг в `plane_api._request_with_retry` — 429 расходовал retry-бюджет и ронял запросы → потеря данных; исправлено (429 не тратит бюджет, cap 20). Замер: 3:54 → 2:25 (~38%; упираемся в серверный лимит ~50 req/min, не latency — больше воркеров не помогает). Корректность: relations 186/186 идентичны, pages идентичны, 0 warnings. См. DEC-017. **Не закоммичено.** README/GUIDE не трогали — формулировки времени («1–3 мин») остались верны (упираемся в req/min, для больших проектов всё ещё минуты).
 - 2026-06-21 (сессия 5): **Фикс сводки модулей по состояниям** — таблица `## Modules` (`plane_snapshot.py`) и сводка `--module` (`plane_fetch.py`) брали per-state счётчики из битых API-полей (`completed_issues`/`started_issues`/...), которые возвращают ~`1` в каждой колонке независимо от размера модуля. Теперь считаем локально: по членству модуля + `group` каждого state, без доп. запросов. Добавлена колонка/строка `Cancelled` — сумма групп сходится с Total. Верифицировано на профиле `test` (модуль «Инфраструктура»: было 1/1, стало 3/3/7/5/0 = 18 = Total; все 9 модулей сходятся). См. DEC-016. **Не закоммичено.**
 - 2026-06-04 (сессия 4): **Синхронизация документации** — README.md и GUIDE.md актуализированы под текущее состояние скриптов: diff + intake добавлены в обзор "Что умеет", полная таблица флагов fetch (`--uuid`, `--no-links`, `--no-description`), шпаргалка GUIDE дополнена intake/pages/fetch-by-entity/diff. Коммит `c1e5ac3`, запушено в origin/main. Новое правило: README+GUIDE держать актуальными после каждого изменения фич.
@@ -39,9 +40,7 @@ Ad hoc инструмент для выгрузки snapshot'ов из Plane (pl
 ## Следующий шаг
 
 Backlog (в порядке приоритета как обсуждалось):
-1. **Intake status changes** — смена статуса триажа. Требует разбора исходников `makeplane/plane` на GitHub: найти рабочий path для status-endpoint.
-2. **Intake delete** — action=delete в `## Intake`.
-3. **Интеграция с plane-lean-edit / plane-transfer routing**.
+1. **Интеграция с plane-lean-edit / plane-transfer routing**.
 
 Рабочий профиль для тестирования: `--profile test` (TESTPROJEC, bigbowls workspace).
 
@@ -50,4 +49,4 @@ Backlog (в порядке приоритета как обсуждалось):
 - Relations/pages fetch — N+1 (один запрос на item/page). Распараллелено (DEC-017, `FETCH_WORKERS=3`), но узкое место — серверный rate limit ~50 req/min: даже с параллелизмом ~2.5 мин на 136 items+7 pages. Больше воркеров не ускоряет (упираемся в req/min, не latency). Batch-эндпоинта для relations в API нет (зондировано).
 - Plane cloud rate limit: ~50 req/min, Retry-After от 1s до 41s. 429 обрабатывается в `_request_with_retry` и НЕ роняет запрос (не тратит retry-бюджет, DEC-017).
 - Endpoint `module-issues/` (не `work-items/`) — нестандартный path, может измениться в будущих версиях API.
-- Intake status (accept/reject/snooze) — нельзя менять из скрипта: `intake-issues/{id}/status/` отвергает все методы, недокументирован. Read показывает текущий статус. Delete intake тоже не реализован. Оба — в backlog.
+- Intake status/delete — РЕШЕНО (DEC-018): резолв по work-item uuid (`it["issue"]`), не intake-issue id. Status: `PATCH intake-issues/{work_uuid}/status/`; delete: `DELETE intake-issues/{work_uuid}/`. Требует `intake_view:true` на проекте.

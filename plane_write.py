@@ -26,6 +26,13 @@ from plane_api import (
 )
 
 
+# Triage status label → Plane numeric value (mirror of INTAKE_STATUS in
+# plane_snapshot.py; kept local to avoid importing the snapshot module).
+INTAKE_STATUS_VALUE = {
+    "pending": -2, "rejected": -1, "snoozed": 0, "accepted": 1, "duplicate": 2,
+}
+
+
 # ── Data structures ─────────────────────────────────────────────────────────
 
 @dataclass
@@ -103,25 +110,29 @@ class ResolvedPage:
 
 @dataclass
 class IntakeSpec:
-    """Parsed from markdown ## Intake table. Create + edit (name/desc/priority) only.
+    """Parsed from markdown ## Intake table.
 
-    Status changes (accept/reject/snooze) are not supported — the Plane intake
-    status endpoint is unstable. See decisions.md.
+    Actions: create, update (name/desc/priority and/or triage status), delete.
+    Status changes go through intake-issues/{work_uuid}/status/ (see DEC-018).
     """
-    action: str = "create"                          # "create" or "update"
-    existing_id: str = ""                            # intake sequence number for update (e.g. "486")
+    action: str = "create"                          # "create", "update", or "delete"
+    existing_id: str = ""                            # intake sequence number for update/delete (e.g. "486")
     name: str = ""
     priority: str = ""                               # urgent/high/medium/low/none
+    status_label: str = ""                           # triage status: pending/rejected/snoozed/accepted/duplicate
     description_html: str = ""
     line_number: int = 0
 
 
 @dataclass
 class ResolvedIntake:
-    """Ready for API call. Create → POST intake-issues/; update → PATCH work-items/{issue_uuid}/."""
+    """Ready for API call. Endpoints (all keyed by work-item UUID, see DEC-018):
+    create → POST intake-issues/; field edit → PATCH work-items/{uuid}/;
+    status → PATCH intake-issues/{uuid}/status/; delete → DELETE intake-issues/{uuid}/."""
     spec: IntakeSpec
-    api_body: dict = field(default_factory=dict)
-    issue_uuid: str | None = None                    # work-item UUID for update PATCH
+    api_body: dict = field(default_factory=dict)     # field-edit body for work-items PATCH
+    issue_uuid: str | None = None                    # work-item UUID (edit/status/delete)
+    status_value: int | None = None                  # triage status to set via /status/ (None = no change)
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     created_id: str | None = None
@@ -473,14 +484,14 @@ def parse_intake_table(section_text: str, section_start: int) -> list[IntakeSpec
             cells.append("")
 
         action = cells[col.get("action", -1)].strip().lower() if "action" in col else "create"
-        if action not in ("create", "update"):
+        if action not in ("create", "update", "delete"):
             action = "create"
 
         existing_id = cells[col.get("id", -1)].strip() if "id" in col else ""
         name = _unesc(cells[col.get("name", -1)]).strip() if "name" in col else ""
 
-        # For update, need existing_id; for create, need name
-        if action == "update" and not existing_id:
+        # update/delete need existing_id; create needs name
+        if action in ("update", "delete") and not existing_id:
             continue
         if action == "create" and not name:
             continue
@@ -488,11 +499,15 @@ def parse_intake_table(section_text: str, section_start: int) -> list[IntakeSpec
         priority_raw = cells[col.get("priority", -1)].strip().lower() if "priority" in col else ""
         priority = priority_raw if priority_raw in ("urgent", "high", "medium", "low", "none") else ""
 
+        status_raw = cells[col.get("status", -1)].strip().lower() if "status" in col else ""
+        status_label = status_raw if status_raw in INTAKE_STATUS_VALUE else ""
+
         spec = IntakeSpec(
             action=action,
             existing_id=existing_id,
             name=name,
             priority=priority,
+            status_label=status_label,
             line_number=section_start + line_off,
         )
         specs.append(spec)
@@ -966,12 +981,14 @@ def validate_pages(resolved_pages: list[ResolvedPage]) -> tuple[list[str], list[
 
 def resolve_all_intake(intake_specs: list[IntakeSpec],
                        intake_list: list[dict]) -> list[ResolvedIntake]:
-    """Resolve intake specs to API-ready form.
-
-    Create → body {"issue": {...}} for POST intake-issues/.
-    Update → flat body {...} for PATCH work-items/{issue_uuid}/ (resolved from intake_list).
+    """Resolve intake specs to API-ready form. All update/delete/status ops key
+    by work-item UUID (see DEC-018):
+    create → POST intake-issues/ body {"issue": {...}};
+    field edit → PATCH work-items/{uuid}/ flat body;
+    status → PATCH intake-issues/{uuid}/status/ {"status": N};
+    delete → DELETE intake-issues/{uuid}/.
     """
-    # Map intake sequence_id → work-item UUID for update resolution
+    # Map intake sequence_id → work-item UUID for update/delete/status resolution
     seq_to_issue: dict[str, str] = {}
     for it in intake_list:
         seq = it.get("issue_detail", {}).get("sequence_id")
@@ -982,14 +999,15 @@ def resolve_all_intake(intake_specs: list[IntakeSpec],
     for spec in intake_specs:
         item = ResolvedIntake(spec=spec)
 
-        if spec.action == "update":
-            key = spec.existing_id.strip()
-            issue_uuid = seq_to_issue.get(key)
+        if spec.action in ("update", "delete"):
+            issue_uuid = seq_to_issue.get(spec.existing_id.strip())
             if issue_uuid:
                 item.issue_uuid = issue_uuid
             else:
                 item.errors.append(f"Unknown intake item '{spec.existing_id}'")
-            # Build flat work-item PATCH body from changed fields
+
+        if spec.action == "update":
+            # Field edits go through work-items PATCH; status goes through /status/.
             body: dict = {}
             if spec.name:
                 body["name"] = spec.name
@@ -998,7 +1016,9 @@ def resolve_all_intake(intake_specs: list[IntakeSpec],
             if spec.description_html:
                 body["description_html"] = spec.description_html
             item.api_body = body
-        else:
+            if spec.status_label:
+                item.status_value = INTAKE_STATUS_VALUE[spec.status_label]
+        elif spec.action == "create":
             # Create — nested under "issue"
             issue: dict = {"name": spec.name}
             if spec.priority:
@@ -1027,10 +1047,10 @@ def validate_intake(resolved_intake: list[ResolvedIntake],
             errors.append(f"Duplicate intake name '{name}'")
         seen.add(name)
 
-    # update must have a field to change
+    # update must change at least a field or the triage status
     for item in resolved_intake:
-        if item.spec.action == "update" and not item.api_body:
-            errors.append(f"Intake update '{item.spec.existing_id}' has no fields to change")
+        if item.spec.action == "update" and not item.api_body and item.status_value is None:
+            errors.append(f"Intake update '{item.spec.existing_id}' has no fields or status to change")
 
     # Per-item errors
     for item in resolved_intake:
@@ -1142,6 +1162,7 @@ def print_plan(resolved: list[ResolvedItem],
 
     intake_creates = sum(1 for r in resolved_intake if r.spec.action == "create" and not r.skipped)
     intake_updates = sum(1 for r in resolved_intake if r.spec.action == "update" and not r.skipped)
+    intake_deletes = sum(1 for r in resolved_intake if r.spec.action == "delete" and not r.skipped)
 
     creates = sum(1 for r in resolved if r.spec.action == "create" and not r.skipped)
     updates = sum(1 for r in resolved if r.spec.action == "update" and not r.skipped)
@@ -1155,7 +1176,7 @@ def print_plan(resolved: list[ResolvedItem],
     if resolved_pages:
         print(f"  Pages   — Create: {page_creates}", file=sys.stderr)
     if resolved_intake:
-        print(f"  Intake  — Create: {intake_creates} | Update: {intake_updates}", file=sys.stderr)
+        print(f"  Intake  — Create: {intake_creates} | Update: {intake_updates} | Delete: {intake_deletes}", file=sys.stderr)
     if resolved:
         print(f"  Items   — Create: {creates} | Update: {updates} | Delete: {deletes} | Skipped: {skipped}", file=sys.stderr)
     print(f"{'='*60}\n", file=sys.stderr)
@@ -1200,9 +1221,11 @@ def print_plan(resolved: list[ResolvedItem],
             label = (item.spec.existing_id or item.spec.name)[:40]
             priority = item.spec.priority or ""
             print(f"  {item.spec.action:<8} {label:<40} {priority:<10}", file=sys.stderr)
-            if item.spec.action == "update" and item.api_body:
-                fields = ", ".join(item.api_body.keys())
-                print(f"           Fields: {fields}", file=sys.stderr)
+            if item.spec.action == "update":
+                if item.api_body:
+                    print(f"           Fields: {', '.join(item.api_body.keys())}", file=sys.stderr)
+                if item.status_value is not None:
+                    print(f"           Status → {item.spec.status_label}", file=sys.stderr)
         print("", file=sys.stderr)
 
     # Items
@@ -1379,13 +1402,29 @@ def execute(resolved: list[ResolvedItem],
             print(f"  [OK] Created page '{item.spec.name}'", file=sys.stderr)
             time.sleep(0.3)
 
-    # ── Intake create + edit ────────────────────────────────────────────────
+    # ── Intake delete + create + edit/status ────────────────────────────────
     intake_active = [r for r in resolved_intake if not r.skipped]
     intake_created_count = 0
     intake_updated_count = 0
+    intake_deleted_count = 0
 
+    intake_deletes = [r for r in intake_active if r.spec.action == "delete"]
     intake_creates = [r for r in intake_active if r.spec.action == "create"]
     intake_updates = [r for r in intake_active if r.spec.action == "update"]
+
+    # Deletes first (safest order, mirrors work-item CRUD)
+    if intake_deletes:
+        print(f"\nDeleting {len(intake_deletes)} intake items...", file=sys.stderr)
+        for item in intake_deletes:
+            if not item.issue_uuid:
+                print(f"  [SKIP] Intake '{item.spec.existing_id}': work item not resolved", file=sys.stderr)
+                continue
+            if verbose:
+                print(f"  [DELETE] intake-issues/{item.issue_uuid}/", file=sys.stderr)
+            api_delete(f"intake-issues/{item.issue_uuid}/", critical=False)
+            intake_deleted_count += 1
+            print(f"  [OK] Deleted intake '{item.spec.existing_id}'", file=sys.stderr)
+            time.sleep(0.3)
 
     if intake_creates:
         print(f"\nCreating {len(intake_creates)} intake items...", file=sys.stderr)
@@ -1407,15 +1446,32 @@ def execute(resolved: list[ResolvedItem],
             if not item.issue_uuid:
                 print(f"  [SKIP] Intake '{item.spec.existing_id}': work item not resolved", file=sys.stderr)
                 continue
-            if verbose:
-                print(f"  [PATCH] work-items/{item.issue_uuid}/ {item.api_body}", file=sys.stderr)
-            result = api_patch(f"work-items/{item.issue_uuid}/", item.api_body, critical=False)
-            if result:
+            changed = False
+            # Field edits via work-items PATCH
+            if item.api_body:
+                if verbose:
+                    print(f"  [PATCH] work-items/{item.issue_uuid}/ {item.api_body}", file=sys.stderr)
+                result = api_patch(f"work-items/{item.issue_uuid}/", item.api_body, critical=False)
+                if result:
+                    changed = True
+                    print(f"  [OK] Updated intake '{item.spec.existing_id}': {', '.join(item.api_body.keys())}", file=sys.stderr)
+                else:
+                    print(f"  [FAIL] Intake '{item.spec.existing_id}' fields — {result}", file=sys.stderr)
+                time.sleep(0.3)
+            # Triage status via dedicated /status/ endpoint
+            if item.status_value is not None:
+                if verbose:
+                    print(f"  [PATCH] intake-issues/{item.issue_uuid}/status/ {{'status': {item.status_value}}}", file=sys.stderr)
+                result = api_patch(f"intake-issues/{item.issue_uuid}/status/",
+                                   {"status": item.status_value}, critical=False)
+                if result:
+                    changed = True
+                    print(f"  [OK] Set intake '{item.spec.existing_id}' status → {item.spec.status_label}", file=sys.stderr)
+                else:
+                    print(f"  [FAIL] Intake '{item.spec.existing_id}' status — {result}", file=sys.stderr)
+                time.sleep(0.3)
+            if changed:
                 intake_updated_count += 1
-                print(f"  [OK] Updated intake '{item.spec.existing_id}': {', '.join(item.api_body.keys())}", file=sys.stderr)
-            else:
-                print(f"  [FAIL] Intake '{item.spec.existing_id}' — {result}", file=sys.stderr)
-            time.sleep(0.3)
 
     # ── Work item CRUD ──────────────────────────────────────────────────────
     active = [r for r in resolved if not r.skipped]
@@ -1585,7 +1641,7 @@ def execute(resolved: list[ResolvedItem],
     if page_active:
         print(f"  Pages    — Created: {page_created_count}", file=sys.stderr)
     if intake_active:
-        print(f"  Intake   — Created: {intake_created_count} | Updated: {intake_updated_count}", file=sys.stderr)
+        print(f"  Intake   — Created: {intake_created_count} | Updated: {intake_updated_count} | Deleted: {intake_deleted_count}", file=sys.stderr)
     print(f"  Items    — Created: {created_count} | Updated: {updated_count} | Deleted: {deleted_count}", file=sys.stderr)
     print(f"  Relations: {rel_count} | Comments: {comment_count} | Links: {link_count}", file=sys.stderr)
     print(f"  Module assignments: {len(module_batches)} | Cycle assignments: {len(cycle_batches)}", file=sys.stderr)
@@ -1772,8 +1828,10 @@ Input sections: ## Items, ## Modules, ## Pages, ## Intake (+ ## Descriptions,
         if pc: parts.append(f"{pc} pages created")
         ic = sum(1 for r in resolved_intake if r.spec.action == "create" and not r.skipped)
         iu = sum(1 for r in resolved_intake if r.spec.action == "update" and not r.skipped)
+        idl = sum(1 for r in resolved_intake if r.spec.action == "delete" and not r.skipped)
         if ic: parts.append(f"{ic} intake created")
         if iu: parts.append(f"{iu} intake updated")
+        if idl: parts.append(f"{idl} intake deleted")
         creates = sum(1 for r in resolved if r.spec.action == "create" and not r.skipped)
         updates = sum(1 for r in resolved if r.spec.action == "update" and not r.skipped)
         deletes = sum(1 for r in resolved if r.spec.action == "delete" and not r.skipped)
