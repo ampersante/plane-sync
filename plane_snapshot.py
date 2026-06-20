@@ -16,9 +16,9 @@ Usage:
 """
 
 import argparse
+import concurrent.futures
 import os
 import sys
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -30,6 +30,33 @@ from plane_api import (
 
 
 INTAKE_STATUS = {-2: "pending", -1: "rejected", 0: "snoozed", 1: "accepted", 2: "duplicate"}
+
+# Concurrency for per-item N+1 fetches (relations, page contents). Conservative
+# default against Plane cloud rate limit (~50 req/min); 429s are handled by the
+# retry/Retry-After logic in plane_api._request_with_retry, so overshoot just
+# self-throttles rather than failing.
+FETCH_WORKERS = 3
+
+
+def _fetch_concurrent(items: list, fetch_fn, label: str, log_every: int) -> dict:
+    """Fetch over items concurrently. fetch_fn(item) -> (key, value | None).
+    Returns {key: value} for non-None values. Result order is not preserved.
+
+    Thread-safety: fetch_fn runs in worker threads and must only call stateless
+    helpers (api_get). The results dict is written only here, in the main thread.
+    """
+    results: dict = {}
+    done = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=FETCH_WORKERS) as ex:
+        futures = [ex.submit(fetch_fn, it) for it in items]
+        for fut in concurrent.futures.as_completed(futures):
+            key, value = fut.result()
+            if value is not None:
+                results[key] = value
+            done += 1
+            if done % log_every == 0:
+                print(f"  {label}: {done}/{len(items)}...", file=sys.stderr)
+    return results
 
 
 # ── Data Fetching ────────────────────────────────────────────────────────────
@@ -63,43 +90,40 @@ def fetch_all_data(include_descriptions: bool, include_pages: bool = False,
         mod_items = api_get_paginated(f"modules/{mod_id}/module-issues/")
         module_membership[mod_id] = {item["id"] for item in mod_items}
 
-    # Fetch relations sequentially with throttling to avoid rate limits
+    # Fetch relations concurrently (N+1: one request per work item)
     print(f"Fetching relations for {len(work_items)} items...", file=sys.stderr)
-    relations: dict[str, dict] = {}  # item_id → {blocking: [...], blocked_by: [...], ...}
 
-    for i, item in enumerate(work_items):
+    def _fetch_relations(item):
         item_id = item["id"]
         data = api_get(f"work-items/{item_id}/relations/",
                        max_retries=3, critical=False)
-        if data:
-            # Only store if there are actual relations
-            has_relations = any(
-                isinstance(v, list) and len(v) > 0
-                for v in data.values()
-            )
-            if has_relations:
-                relations[item_id] = data
-        if (i + 1) % 50 == 0:
-            print(f"  Relations: {i + 1}/{len(work_items)}...", file=sys.stderr)
-        # Throttle: ~0.3s between requests to stay under rate limit
-        time.sleep(0.3)
+        # Only keep items that actually have relations
+        if data and any(isinstance(v, list) and len(v) > 0 for v in data.values()):
+            return item_id, data
+        return item_id, None
+
+    relations: dict[str, dict] = _fetch_concurrent(
+        work_items, _fetch_relations, "Relations", 50)
 
     print(f"  Got relations for {len(relations)} items", file=sys.stderr)
 
-    # Fetch pages (opt-in, requires N+1 requests for content)
+    # Fetch pages (opt-in, N+1: one request per page for content)
     pages: list[dict] = []
     if include_pages:
         print("Fetching pages...", file=sys.stderr)
         pages_list = api_get_list("pages/")
         print(f"  Got {len(pages_list)} pages, fetching content...", file=sys.stderr)
-        for i, page in enumerate(pages_list):
+
+        def _fetch_page(page):
             page_data = api_get(f"pages/{page['id']}/", max_retries=3, critical=False)
             if page_data:
                 page_data["parent_id"] = page.get("parent_id")  # merge from list
-                pages.append(page_data)
-            if (i + 1) % 10 == 0:
-                print(f"  Pages: {i + 1}/{len(pages_list)}...", file=sys.stderr)
-            time.sleep(0.3)
+                return page["id"], page_data
+            return page["id"], None
+
+        pages_by_id = _fetch_concurrent(pages_list, _fetch_page, "Pages", 10)
+        # Preserve original list order (concurrent fetch completes out of order)
+        pages = [pages_by_id[p["id"]] for p in pages_list if p["id"] in pages_by_id]
         print(f"  Fetched content for {len(pages)} pages", file=sys.stderr)
 
     # Fetch intake items (opt-in). The list endpoint embeds issue_detail, so a

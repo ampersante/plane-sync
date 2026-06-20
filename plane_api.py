@@ -105,9 +105,17 @@ def _headers() -> dict:
 
 def _request_with_retry(req: urllib.request.Request, path: str, *,
                         max_retries: int = 3, critical: bool = True) -> dict:
-    """Execute a request with retry, backoff, and rate limit handling."""
+    """Execute a request with retry, backoff, and rate limit handling.
+
+    429 (rate limited) waits out Retry-After and retries WITHOUT consuming the
+    retry budget — rate limiting is transient and must not cause a request to be
+    dropped (which would silently lose data, e.g. relations). A safety cap on
+    consecutive 429s guards against a pathological never-ending loop.
+    """
     last_error = None
-    for attempt in range(max_retries + 1):
+    attempt = 0          # counts only genuine errors, not 429 throttling
+    rate_limited = 0     # consecutive 429s, capped to avoid an infinite loop
+    while attempt <= max_retries:
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 body = resp.read().decode()
@@ -120,20 +128,26 @@ def _request_with_retry(req: urllib.request.Request, path: str, *,
                 print("Check your PLANE_API_TOKEN. Get one at: Plane → Settings → API Tokens", file=sys.stderr)
                 sys.exit(1)
             if e.code == 429:
+                rate_limited += 1
+                if rate_limited > 20:
+                    last_error = e
+                    break  # give up only after 20 consecutive rate-limit waits
                 retry_after = int(e.headers.get("Retry-After", 5))
                 print(f"  Rate limited, waiting {retry_after}s...", file=sys.stderr)
                 time.sleep(retry_after)
-                continue  # don't count as attempt
+                continue  # don't count as a retry attempt
             if e.code == 404 and not critical:
                 return {}
             last_error = e
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             last_error = e
 
+        rate_limited = 0
         if attempt < max_retries:
             backoff = 2 ** attempt  # 1, 2, 4
             print(f"  Retry {attempt + 1}/{max_retries} for {path} (waiting {backoff}s)...", file=sys.stderr)
             time.sleep(backoff)
+        attempt += 1
 
     if critical:
         print(f"Error: Failed {path} after {max_retries} retries: {last_error}", file=sys.stderr)

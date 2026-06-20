@@ -1,7 +1,7 @@
 # Session Handoff
 
 Статус: active
-Обновлено: 2026-06-21 (сессия 5)
+Обновлено: 2026-06-21 (сессия 6)
 
 Нулевая точка входа между сессиями. Читать первым делом чтобы понять где остановились.
 
@@ -22,6 +22,7 @@ Ad hoc инструмент для выгрузки snapshot'ов из Plane (pl
 
 ## На чём остановились
 
+- 2026-06-21 (сессия 6): **Оптимизация relations + pages (конкурентный фетч) + фикс 429-retry**. Оба N+1 цикла в `plane_snapshot.py` (relations, `--pages` content) переведены на `ThreadPoolExecutor` (хелпер `_fetch_concurrent`, `FETCH_WORKERS=3`), убраны `sleep(0.3)`. Batch-эндпоинта для relations в API нет (зондировано). Параллелизм вскрыл баг в `plane_api._request_with_retry` — 429 расходовал retry-бюджет и ронял запросы → потеря данных; исправлено (429 не тратит бюджет, cap 20). Замер: 3:54 → 2:25 (~38%; упираемся в серверный лимит ~50 req/min, не latency — больше воркеров не помогает). Корректность: relations 186/186 идентичны, pages идентичны, 0 warnings. См. DEC-017. **Не закоммичено.** README/GUIDE не трогали — формулировки времени («1–3 мин») остались верны (упираемся в req/min, для больших проектов всё ещё минуты).
 - 2026-06-21 (сессия 5): **Фикс сводки модулей по состояниям** — таблица `## Modules` (`plane_snapshot.py`) и сводка `--module` (`plane_fetch.py`) брали per-state счётчики из битых API-полей (`completed_issues`/`started_issues`/...), которые возвращают ~`1` в каждой колонке независимо от размера модуля. Теперь считаем локально: по членству модуля + `group` каждого state, без доп. запросов. Добавлена колонка/строка `Cancelled` — сумма групп сходится с Total. Верифицировано на профиле `test` (модуль «Инфраструктура»: было 1/1, стало 3/3/7/5/0 = 18 = Total; все 9 модулей сходятся). См. DEC-016. **Не закоммичено.**
 - 2026-06-04 (сессия 4): **Синхронизация документации** — README.md и GUIDE.md актуализированы под текущее состояние скриптов: diff + intake добавлены в обзор "Что умеет", полная таблица флагов fetch (`--uuid`, `--no-links`, `--no-description`), шпаргалка GUIDE дополнена intake/pages/fetch-by-entity/diff. Коммит `c1e5ac3`, запушено в origin/main. Новое правило: README+GUIDE держать актуальными после каждого изменения фич.
 - 2026-06-03 (сессия 3): **Diff между snapshot'ами** — новый `plane_diff.py old.md new.md`: сравнивает work items двух снапшотов (added/removed/changed), markdown или `--json`, без API. Labels/assignees сравниваются как множества. См. DEC-015.
@@ -38,16 +39,15 @@ Ad hoc инструмент для выгрузки snapshot'ов из Plane (pl
 ## Следующий шаг
 
 Backlog (в порядке приоритета как обсуждалось):
-1. **Оптимизация relations** — ускорить N+1 (~2.5 мин). Исследовать batch/project-level endpoint в Plane API.
-2. **Intake status changes** — смена статуса триажа. Требует разбора исходников `makeplane/plane` на GitHub: найти рабочий path для status-endpoint.
-3. **Intake delete** — action=delete в `## Intake`.
-4. **Интеграция с plane-lean-edit / plane-transfer routing**.
+1. **Intake status changes** — смена статуса триажа. Требует разбора исходников `makeplane/plane` на GitHub: найти рабочий path для status-endpoint.
+2. **Intake delete** — action=delete в `## Intake`.
+3. **Интеграция с plane-lean-edit / plane-transfer routing**.
 
 Рабочий профиль для тестирования: `--profile test` (TESTPROJEC, bigbowls workspace).
 
 ## Известные ограничения
 
-- Relations fetch — N+1 проблема: один запрос на каждый work item (~2.5 мин для 356 items из-за rate limit).
-- Plane cloud rate limit: ~50 req/min, Retry-After от 1s до 41s.
+- Relations/pages fetch — N+1 (один запрос на item/page). Распараллелено (DEC-017, `FETCH_WORKERS=3`), но узкое место — серверный rate limit ~50 req/min: даже с параллелизмом ~2.5 мин на 136 items+7 pages. Больше воркеров не ускоряет (упираемся в req/min, не latency). Batch-эндпоинта для relations в API нет (зондировано).
+- Plane cloud rate limit: ~50 req/min, Retry-After от 1s до 41s. 429 обрабатывается в `_request_with_retry` и НЕ роняет запрос (не тратит retry-бюджет, DEC-017).
 - Endpoint `module-issues/` (не `work-items/`) — нестандартный path, может измениться в будущих версиях API.
 - Intake status (accept/reject/snooze) — нельзя менять из скрипта: `intake-issues/{id}/status/` отвергает все методы, недокументирован. Read показывает текущий статус. Delete intake тоже не реализован. Оба — в backlog.
