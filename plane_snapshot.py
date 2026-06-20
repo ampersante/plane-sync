@@ -288,13 +288,25 @@ def render_markdown(data: dict, maps: dict, warnings: list[str],
     lines.append("")
 
     # Modules
+    # Per-state counts recomputed locally: Plane API's *_issues fields are unreliable
+    # (return ~1 per column regardless of module size). total_issues is correct, so kept.
+    item_state_group = {
+        item["id"]: maps["state"].get(item.get("state", ""), {}).get("group")
+        for item in work_items
+    }
+    _col_groups = [("completed", "Done"), ("started", "In Progress"),
+                   ("unstarted", "Todo"), ("backlog", "Backlog"), ("cancelled", "Cancelled")]
     lines.append("## Modules")
-    lines.append("| Name | Total | Done | In Progress | Todo | Backlog |")
-    lines.append("|---|---|---|---|---|---|")
+    lines.append("| Name | Total | Done | In Progress | Todo | Backlog | Cancelled |")
+    lines.append("|---|---|---|---|---|---|---|")
     for m in sorted(data["modules"], key=lambda x: x.get("sort_order", 0)):
-        lines.append(f"| {_esc(m['name'])} | {m.get('total_issues', 0)} | "
-                     f"{m.get('completed_issues', 0)} | {m.get('started_issues', 0)} | "
-                     f"{m.get('unstarted_issues', 0)} | {m.get('backlog_issues', 0)} |")
+        counts = {g: 0 for g, _ in _col_groups}
+        for item_id in data["module_membership"].get(m["id"], set()):
+            grp = item_state_group.get(item_id)
+            if grp in counts:
+                counts[grp] += 1
+        cells = " | ".join(str(counts[g]) for g, _ in _col_groups)
+        lines.append(f"| {_esc(m['name'])} | {m.get('total_issues', 0)} | {cells} |")
     lines.append("")
 
     # Work Items — split into top-level and children
