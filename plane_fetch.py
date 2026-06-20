@@ -260,7 +260,7 @@ def fetch_module(uuid: str) -> dict:
     module = api_get(f"modules/{uuid}/")
     mod_items = api_get_paginated(f"modules/{uuid}/module-issues/")
     states = api_get_list("states/")
-    state_map = {s["id"]: s["name"] for s in states}
+    state_map = {s["id"]: {"name": s["name"], "group": s["group"]} for s in states}
     members = api_get_list("members/")
     member_map = {m["id"]: m["display_name"] for m in members}
     return {
@@ -458,9 +458,18 @@ def render_module_md(data: dict) -> str:
     if lead_id:
         lines.append(f"| Lead | {member_map.get(lead_id, lead_id)} |")
 
+    # Per-state counts recomputed locally from items: Plane API's *_issues fields are
+    # unreliable (return ~1 per column regardless of module size). total_issues is correct.
+    _groups = [("completed", "Done"), ("started", "In Progress"),
+               ("unstarted", "Todo"), ("backlog", "Backlog"), ("cancelled", "Cancelled")]
+    counts = {g: 0 for g, _ in _groups}
+    for it in items:
+        grp = state_map.get(it.get("state", ""), {}).get("group")
+        if grp in counts:
+            counts[grp] += 1
     lines.append(f"| Total | {module.get('total_issues', len(items))} |")
-    lines.append(f"| Done | {module.get('completed_issues', 0)} |")
-    lines.append(f"| In Progress | {module.get('started_issues', 0)} |")
+    for g, label in _groups:
+        lines.append(f"| {label} | {counts[g]} |")
 
     lines.append("")
 
@@ -473,7 +482,7 @@ def render_module_md(data: dict) -> str:
             seq = it.get("sequence_id", 0)
             name = it.get("name", "")
             state_id = it.get("state")
-            state = state_map.get(state_id, "") if state_id else ""
+            state = state_map.get(state_id, {}).get("name", "") if state_id else ""
             priority = it.get("priority", "")
             lines.append(f"| {seq} | {name} | {state} | {priority} |")
         lines.append("")

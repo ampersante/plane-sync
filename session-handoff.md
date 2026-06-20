@@ -1,7 +1,7 @@
 # Session Handoff
 
 Статус: active
-Обновлено: 2026-06-04 (сессия 3, save-session)
+Обновлено: 2026-06-21 (сессия 5)
 
 Нулевая точка входа между сессиями. Читать первым делом чтобы понять где остановились.
 
@@ -22,6 +22,8 @@ Ad hoc инструмент для выгрузки snapshot'ов из Plane (pl
 
 ## На чём остановились
 
+- 2026-06-21 (сессия 5): **Фикс сводки модулей по состояниям** — таблица `## Modules` (`plane_snapshot.py`) и сводка `--module` (`plane_fetch.py`) брали per-state счётчики из битых API-полей (`completed_issues`/`started_issues`/...), которые возвращают ~`1` в каждой колонке независимо от размера модуля. Теперь считаем локально: по членству модуля + `group` каждого state, без доп. запросов. Добавлена колонка/строка `Cancelled` — сумма групп сходится с Total. Верифицировано на профиле `test` (модуль «Инфраструктура»: было 1/1, стало 3/3/7/5/0 = 18 = Total; все 9 модулей сходятся). См. DEC-016. **Не закоммичено.**
+- 2026-06-04 (сессия 4): **Синхронизация документации** — README.md и GUIDE.md актуализированы под текущее состояние скриптов: diff + intake добавлены в обзор "Что умеет", полная таблица флагов fetch (`--uuid`, `--no-links`, `--no-description`), шпаргалка GUIDE дополнена intake/pages/fetch-by-entity/diff. Коммит `c1e5ac3`, запушено в origin/main. Новое правило: README+GUIDE держать актуальными после каждого изменения фич.
 - 2026-06-03 (сессия 3): **Diff между snapshot'ами** — новый `plane_diff.py old.md new.md`: сравнивает work items двух снапшотов (added/removed/changed), markdown или `--json`, без API. Labels/assignees сравниваются как множества. См. DEC-015.
 - 2026-06-03 (сессия 3): **Pages-only snapshot** — `--pages` теперь пишет страницы в отдельный файл `<output>.pages.md`, убраны из общего snapshot. Рендер вынесен в standalone `render_pages_md()`. См. DEC-014.
 - 2026-06-03 (сессия 3): Добавлена **поддержка Intake** в три скрипта (read + create + edit). Зондированием выяснены API-quirks (доку расходится с реальностью): endpoint `intake-issues/` (не `intake-work-items/`); list самодостаточен с `issue_detail` — N+1 не нужен; retrieve по id → 404 (fetch через list+фильтр); create нестит данные под `issue`; edit полей через штатный `work-items/{issue_uuid}/`. Status триажа и delete отложены — status-endpoint нестабилен. Включён `intake_view:true` на профиле `test`. Протестировано end-to-end (create #487 + update #486). См. DEC-013. **Прибрать**: на тестовом проекте остались intake-айтемы #486 ("plane-sync probe v2") и #487 ("plane-sync new intake") — артефакты теста, удалить вручную при желании (delete не в scope скрипта).

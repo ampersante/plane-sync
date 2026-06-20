@@ -11,6 +11,7 @@
 
 ## Done
 
+- [x] **Баг: сводка модулей врёт по состояниям**: таблица `## Modules` (`plane_snapshot.py` `render_snapshot_md`) и сводка `--module` (`plane_fetch.py` `render_module_md`) брали per-state счётчики из битых API-полей `completed_issues`/`started_issues`/... (показывали ~`1` в каждой колонке независимо от размера модуля). Фикс: пересчёт локально по членству модуля + `group` каждого state, без доп. запросов. Добавлена колонка/строка `Cancelled` — сумма групп сходится с Total. См. DEC-016 (2026-06-21)
 - [x] **Diff между snapshot'ами**: `plane_diff.py old.md new.md` — сравнение work items двух snapshot.md (added/removed/changed), markdown или `--json`. Stdlib-only, без API. См. DEC-015 (2026-06-03)
 - [x] **Pages-only snapshot**: `--pages` пишет страницы в отдельный файл `<output>.pages.md`, убраны из общего snapshot. `render_pages_md()` standalone. См. DEC-014 (2026-06-03)
 - [x] **Intake support (read + create + edit)**: snapshot `--intake` (секция Intake), fetch `--intake "name"|<seq>`, write `## Intake` + `## Intake Contents` (create + edit name/desc/priority). Endpoint `intake-issues/` (list самодостаточен, без N+1); edit полей через `work-items/{issue_uuid}/`. Status и delete отложены (см. backlog). См. DEC-013 (2026-06-03)
