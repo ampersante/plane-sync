@@ -24,6 +24,7 @@ from plane_api import (
     load_dotenv, set_base_url, api_get, api_get_list, api_get_paginated,
     api_post, api_patch, api_delete, load_profile,
 )
+from plane_md import unesc_md_cell
 
 
 # Triage status label → Plane numeric value (mirror of INTAKE_STATUS in
@@ -292,11 +293,6 @@ def _parse_table(text: str) -> tuple[list[str], list[tuple[list[str], int]]]:
     return headers, rows
 
 
-def _unesc(text: str) -> str:
-    """Unescape pipe characters from markdown tables."""
-    return text.replace("\\|", "|")
-
-
 def parse_items_table(section_text: str, section_start: int) -> list[WorkItemSpec]:
     """Parse ## Items section into WorkItemSpec list."""
     headers, rows = _parse_table(section_text)
@@ -323,7 +319,7 @@ def parse_items_table(section_text: str, section_start: int) -> list[WorkItemSpe
         # Existing ID for update/delete (e.g. "CT-42")
         existing_id = cells[col.get("id", -1)].strip() if "id" in col else ""
 
-        name = _unesc(cells[col["name"]]).strip() if "name" in col else ""
+        name = unesc_md_cell(cells[col["name"]]).strip() if "name" in col else ""
 
         # For delete, name is optional
         if action == "delete" and not name and not existing_id:
@@ -393,8 +389,8 @@ def parse_modules_table(section_text: str, section_start: int) -> list[ModuleSpe
         if action not in ("create", "update", "delete"):
             action = "create"
 
-        existing_name = _unesc(cells[col.get("id", -1)]).strip() if "id" in col else ""
-        name = _unesc(cells[col.get("name", -1)]).strip() if "name" in col else ""
+        existing_name = unesc_md_cell(cells[col.get("id", -1)]).strip() if "id" in col else ""
+        name = unesc_md_cell(cells[col.get("name", -1)]).strip() if "name" in col else ""
 
         # For delete, need at least existing_name
         if action == "delete" and not existing_name:
@@ -414,7 +410,7 @@ def parse_modules_table(section_text: str, section_start: int) -> list[ModuleSpe
             action=action,
             existing_name=existing_name,
             name=name,
-            description=_unesc(cells[col.get("description", -1)]).strip() if "description" in col else "",
+            description=unesc_md_cell(cells[col.get("description", -1)]).strip() if "description" in col else "",
             start_date=cells[col.get("start", -1)].strip() if "start" in col else "",
             target_date=cells[col.get("end", -1)].strip() if "end" in col else "",
             status=status,
@@ -442,7 +438,7 @@ def parse_pages_table(section_text: str, section_start: int) -> list[PageSpec]:
         while len(cells) < len(headers):
             cells.append("")
 
-        name = _unesc(cells[col.get("name", -1)]).strip() if "name" in col else ""
+        name = unesc_md_cell(cells[col.get("name", -1)]).strip() if "name" in col else ""
         if not name:
             continue
 
@@ -488,7 +484,7 @@ def parse_intake_table(section_text: str, section_start: int) -> list[IntakeSpec
             action = "create"
 
         existing_id = cells[col.get("id", -1)].strip() if "id" in col else ""
-        name = _unesc(cells[col.get("name", -1)]).strip() if "name" in col else ""
+        name = unesc_md_cell(cells[col.get("name", -1)]).strip() if "name" in col else ""
 
         # update/delete need existing_id; create needs name
         if action in ("update", "delete") and not existing_id:

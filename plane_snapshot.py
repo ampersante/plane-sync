@@ -27,6 +27,7 @@ from plane_api import (
     api_get, api_get_list, api_get_paginated, load_profile,
     html_to_text,
 )
+from plane_md import esc_md_cell
 
 
 INTAKE_STATUS = {-2: "pending", -1: "rejected", 0: "snoozed", 1: "accepted", 2: "duplicate"}
@@ -246,11 +247,6 @@ def validate(data: dict, maps: dict) -> list[str]:
 
 # ── Markdown Rendering ───────────────────────────────────────────────────────
 
-def _esc(text: str) -> str:
-    """Escape pipe characters for markdown tables."""
-    return text.replace("|", "\\|").replace("\n", " ")
-
-
 def render_markdown(data: dict, maps: dict, warnings: list[str],
                     workspace: str, project_id: str, id_prefix: str) -> str:
     """Render all data as a markdown snapshot."""
@@ -330,7 +326,7 @@ def render_markdown(data: dict, maps: dict, warnings: list[str],
             if grp in counts:
                 counts[grp] += 1
         cells = " | ".join(str(counts[g]) for g, _ in _col_groups)
-        lines.append(f"| {_esc(m['name'])} | {m.get('total_issues', 0)} | {cells} |")
+        lines.append(f"| {esc_md_cell(m['name'])} | {m.get('total_issues', 0)} | {cells} |")
     lines.append("")
 
     # Work Items — split into top-level and children
@@ -365,7 +361,7 @@ def render_markdown(data: dict, maps: dict, warnings: list[str],
     lines.append("| ID | Name | State | Priority | Labels | Assignees | Module |")
     lines.append("|---|---|---|---|---|---|---|")
     for item in sorted(top_level, key=lambda x: x["sequence_id"]):
-        lines.append(f"| {_item_id(item)} | {_esc(item['name'])} | {_resolve_state(item)} | "
+        lines.append(f"| {_item_id(item)} | {esc_md_cell(item['name'])} | {_resolve_state(item)} | "
                      f"{item['priority']} | {_resolve_labels(item)} | {_resolve_assignees(item)} | "
                      f"{_resolve_module(item)} |")
     lines.append("")
@@ -377,11 +373,11 @@ def render_markdown(data: dict, maps: dict, warnings: list[str],
         kids = children_by_parent.get(parent_item["id"], [])
         if not kids:
             continue
-        lines.append(f"#### {_item_id(parent_item)}: {_esc(parent_item['name'])}")
+        lines.append(f"#### {_item_id(parent_item)}: {esc_md_cell(parent_item['name'])}")
         lines.append("| ID | Name | State | Priority | Labels | Assignees |")
         lines.append("|---|---|---|---|---|---|")
         for child in sorted(kids, key=lambda x: x["sequence_id"]):
-            lines.append(f"| {_item_id(child)} | {_esc(child['name'])} | {_resolve_state(child)} | "
+            lines.append(f"| {_item_id(child)} | {esc_md_cell(child['name'])} | {_resolve_state(child)} | "
                          f"{child['priority']} | {_resolve_labels(child)} | {_resolve_assignees(child)} |")
         lines.append("")
 
@@ -411,7 +407,7 @@ def render_markdown(data: dict, maps: dict, warnings: list[str],
         for item in sorted(work_items, key=lambda x: x["sequence_id"]):
             desc = html_to_text(item.get("description_html", "") or "")
             if desc:
-                lines.append(f"### {_item_id(item)}: {_esc(item['name'])}")
+                lines.append(f"### {_item_id(item)}: {esc_md_cell(item['name'])}")
                 lines.append(desc)
                 lines.append("")
 
@@ -423,7 +419,7 @@ def render_markdown(data: dict, maps: dict, warnings: list[str],
         for it in sorted(intake, key=lambda x: x.get("issue_detail", {}).get("sequence_id", 0)):
             detail = it.get("issue_detail", {})
             seq = detail.get("sequence_id", "")
-            name = _esc(detail.get("name", ""))
+            name = esc_md_cell(detail.get("name", ""))
             status = INTAKE_STATUS.get(it.get("status"), it.get("status", ""))
             priority = detail.get("priority", "")
             state = detail.get("state", {})
@@ -472,7 +468,7 @@ def render_pages_md(pages: list, maps: dict, workspace: str, project_id: str) ->
 
     def _render_page(page: dict, level: int = 3) -> None:
         heading = "#" * min(level, 6)
-        lines.append(f"{heading} {_esc(page['name'])}")
+        lines.append(f"{heading} {esc_md_cell(page['name'])}")
         owner = maps["member"].get(page.get("owned_by", ""), page.get("owned_by", "?")[:8])
         raw_access = page.get("access")
         access = "public" if raw_access == 0 or raw_access is None else f"access={raw_access}"

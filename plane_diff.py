@@ -19,15 +19,12 @@ import re
 import sys
 from pathlib import Path
 
+from plane_md import unesc_md_cell
+
 # Fields compared between two versions of the same work item.
 _FIELDS = ["name", "state", "priority", "labels", "assignees", "module"]
 # Set-valued fields are normalized (order-insensitive) before comparison.
 _SET_FIELDS = {"labels", "assignees"}
-
-
-def _unesc(text: str) -> str:
-    """Reverse the markdown-table escaping done by snapshot rendering."""
-    return text.replace("\\|", "|")
 
 
 def _iter_tables(md_text: str):
@@ -72,13 +69,13 @@ def extract_work_items(md_text: str) -> dict[str, dict]:
         for cells in rows:
             while len(cells) < len(headers):
                 cells.append("")
-            item_id = _unesc(cells[col["id"]]).strip()
+            item_id = unesc_md_cell(cells[col["id"]]).strip()
             if not item_id:
                 continue
             record: dict = {}
             for field in _FIELDS:
                 if field in col:
-                    record[field] = _unesc(cells[col[field]]).strip()
+                    record[field] = unesc_md_cell(cells[col[field]]).strip()
             items[item_id] = record
     return items
 
