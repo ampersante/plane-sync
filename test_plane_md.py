@@ -2,7 +2,18 @@
 
 import unittest
 
-from plane_md import esc_md_cell, unesc_md_cell
+from plane_md import esc_md_cell, format_item_id, unesc_md_cell
+
+
+class TestFormatItemId(unittest.TestCase):
+    def test_basic(self):
+        self.assertEqual(format_item_id("CT", 42), "CT-42")
+
+    def test_string_seq(self):
+        self.assertEqual(format_item_id("PRJ", "108"), "PRJ-108")
+
+    def test_zero_seq(self):
+        self.assertEqual(format_item_id("AB", 0), "AB-0")
 
 
 class TestEscMdCell(unittest.TestCase):

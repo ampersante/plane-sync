@@ -27,7 +27,8 @@ from plane_api import (
     api_get, api_get_list, api_get_paginated, load_profile,
     html_to_text,
 )
-from plane_md import esc_md_cell
+from plane_md import esc_md_cell, format_item_id
+
 
 
 INTAKE_STATUS = {-2: "pending", -1: "rejected", 0: "snoozed", 1: "accepted", 2: "duplicate"}
@@ -339,7 +340,8 @@ def render_markdown(data: dict, maps: dict, warnings: list[str],
             children_by_parent.setdefault(parent, []).append(item)
 
     def _item_id(item: dict) -> str:
-        return f"{id_prefix}-{item['sequence_id']}"
+        return format_item_id(id_prefix, item["sequence_id"])
+
 
     def _resolve_state(item: dict) -> str:
         info = maps["state"].get(item.get("state", ""), {})
@@ -389,14 +391,14 @@ def render_markdown(data: dict, maps: dict, warnings: list[str],
         source_info = maps["item"].get(item_id)
         if not source_info:
             continue
-        source = f"{id_prefix}-{source_info['seq']}"
+        source = format_item_id(id_prefix, source_info["seq"])
         for rel_type, targets in rels.items():
             if not isinstance(targets, list):
                 continue
             for target_id in targets:
                 target_info = maps["item"].get(target_id)
                 if target_info:
-                    target = f"{id_prefix}-{target_info['seq']}"
+                    target = format_item_id(id_prefix, target_info["seq"])
                     lines.append(f"| {source} | {rel_type} | {target} |")
     lines.append("")
 

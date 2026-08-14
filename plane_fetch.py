@@ -25,6 +25,8 @@ from plane_api import (
     api_get, api_get_list, api_get_paginated, load_profile,
     html_to_text,
 )
+from plane_md import format_item_id
+
 
 _UUID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.I)
 
@@ -273,10 +275,6 @@ def fetch_module(uuid: str) -> dict:
 
 # ── Rendering ──────────────────────────────────────────────────────────────
 
-def _item_id(prefix: str, seq: int) -> str:
-    return f"{prefix}-{seq}"
-
-
 def render_work_item_md(data: dict) -> str:
     """Render work item as markdown."""
     item = data["item"]
@@ -285,7 +283,8 @@ def render_work_item_md(data: dict) -> str:
     item_map = data["item_map"]
 
     seq = item.get("sequence_id", 0)
-    item_id = _item_id(prefix, seq)
+    item_id = format_item_id(prefix, seq)
+
     lines = [f"# {item_id}: {item.get('name', 'Untitled')}"]
     lines.append("")
 
@@ -327,7 +326,8 @@ def render_work_item_md(data: dict) -> str:
     parent_id = item.get("parent")
     if parent_id and parent_id in item_map:
         p = item_map[parent_id]
-        lines.append(f"| Parent | {_item_id(prefix, p['seq'])}: {p['name']} |")
+        lines.append(f"| Parent | {format_item_id(prefix, p['seq'])}: {p['name']} |")
+
 
     created = item.get("created_at", "")[:10]
     updated = item.get("updated_at", "")[:10]
@@ -360,7 +360,8 @@ def render_work_item_md(data: dict) -> str:
             for target_id in targets:
                 target_info = item_map.get(target_id)
                 if target_info:
-                    target_str = f"{_item_id(prefix, target_info['seq'])}: {target_info['name']}"
+                    target_str = f"{format_item_id(prefix, target_info['seq'])}: {target_info['name']}"
+
                 else:
                     target_str = target_id
                 lines.append(f"| {rel_type} | {target_str} |")

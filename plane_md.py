@@ -5,6 +5,11 @@ collapses newlines to spaces, so unesc cannot restore them.
 """
 
 
+def format_item_id(prefix: str, seq) -> str:
+    """Format a work-item identifier as PREFIX-seq (e.g. CT-42)."""
+    return f"{prefix}-{seq}"
+
+
 def esc_md_cell(text: str) -> str:
     """Escape pipe characters and collapse newlines for markdown table cells."""
     return text.replace("|", "\\|").replace("\n", " ")

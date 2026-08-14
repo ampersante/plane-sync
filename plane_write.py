@@ -24,7 +24,8 @@ from plane_api import (
     load_dotenv, set_base_url, api_get, api_get_list, api_get_paginated,
     api_post, api_patch, api_delete, load_profile,
 )
-from plane_md import unesc_md_cell
+from plane_md import format_item_id, unesc_md_cell
+
 
 
 # Triage status label → Plane numeric value (mirror of INTAKE_STATUS in
@@ -231,7 +232,8 @@ def build_reverse_maps(lookups: dict, id_prefix: str) -> dict:
     existing_map: dict[str, str] = {}
     existing_names: dict[str, str] = {}  # name.lower() → "CT-42" for duplicate detection
     for item in lookups["work_items"]:
-        item_key = f"{id_prefix}-{item['sequence_id']}"
+        item_key = format_item_id(id_prefix, item["sequence_id"])
+
         existing_map[item_key.upper()] = item["id"]
         existing_names[item["name"].strip().lower()] = item_key
 
