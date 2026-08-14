@@ -22,7 +22,7 @@ from pathlib import Path
 
 from plane_api import (
     load_dotenv, set_base_url, api_get, api_get_list, api_get_paginated,
-    api_post, api_patch, api_delete, load_profile,
+    api_post, api_patch, api_delete, load_profile, detect_prefix,
 )
 from plane_md import INTAKE_STATUS_VALUE, format_item_id, unesc_md_cell
 
@@ -186,15 +186,6 @@ def fetch_lookups() -> dict:
         "cycles": cycles,
         "work_items": work_items,
     }
-
-
-def detect_prefix() -> str:
-    """Auto-detect project ID prefix (e.g. CT, BB)."""
-    try:
-        proj_data = api_get("", max_retries=2, critical=False)
-        return proj_data.get("identifier", "??")
-    except Exception:
-        return "??"
 
 
 def build_reverse_maps(lookups: dict, id_prefix: str) -> dict:
@@ -1749,7 +1740,7 @@ Input sections: ## Items, ## Modules, ## Pages, ## Intake (+ ## Descriptions,
 
     # Fetch lookups and resolve
     lookups = fetch_lookups()
-    id_prefix = detect_prefix()
+    id_prefix = detect_prefix(default="??")
     print(f"  Project prefix: {id_prefix}", file=sys.stderr)
 
     rmaps = build_reverse_maps(lookups, id_prefix)

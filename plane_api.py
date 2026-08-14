@@ -233,6 +233,15 @@ def api_delete(path: str, *,
     return _request_with_retry(req, path, max_retries=max_retries, critical=critical)
 
 
+def detect_prefix(*, default: str = "??") -> str:
+    """Auto-detect project ID prefix from the project endpoint."""
+    try:
+        project = api_get("", max_retries=2, critical=False)
+        return project.get("identifier", default)
+    except Exception:
+        return default
+
+
 # ── Profile loader ──────────────────────────────────────────────────────────
 
 def load_profile(name: str) -> dict:

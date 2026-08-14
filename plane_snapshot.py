@@ -25,7 +25,7 @@ from pathlib import Path
 from plane_api import (
     load_dotenv, get_warnings, set_base_url,
     api_get, api_get_list, api_get_paginated, load_profile,
-    html_to_text,
+    html_to_text, detect_prefix,
 )
 from plane_md import INTAKE_STATUS, esc_md_cell, format_item_id
 
@@ -564,13 +564,7 @@ def main():
 
     # Auto-detect prefix from project identifier if not given
     if not id_prefix:
-        # Try to get it from work item data — sequence_id exists but prefix needs project info
-        # Fall back to fetching project details
-        try:
-            proj_data = api_get("", max_retries=2, critical=False)
-            id_prefix = proj_data.get("identifier", "??")
-        except Exception:
-            id_prefix = "??"
+        id_prefix = detect_prefix(default="??")
         print(f"  Auto-detected prefix: {id_prefix}", file=sys.stderr)
 
     maps = build_maps(data)

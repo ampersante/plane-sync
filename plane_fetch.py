@@ -23,7 +23,7 @@ from pathlib import Path
 from plane_api import (
     load_dotenv, set_base_url,
     api_get, api_get_list, api_get_paginated, load_profile,
-    html_to_text,
+    html_to_text, detect_prefix,
 )
 from plane_md import INTAKE_STATUS, format_item_id
 
@@ -178,19 +178,13 @@ def build_item_map(items: list) -> dict:
             for item in items}
 
 
-def detect_prefix() -> str:
-    """Auto-detect project prefix from project endpoint."""
-    project = api_get("", critical=False)
-    return project.get("identifier", "ITEM")
-
-
 def fetch_work_item(uuid: str, items: list, opts: dict) -> dict:
     """Fetch full work item detail with associated data."""
     lookups = build_lookups()
     item_map = build_item_map(items)
 
     # Detect prefix
-    prefix = detect_prefix()
+    prefix = detect_prefix(default="ITEM")
 
     print(f"Fetching work item...", file=sys.stderr)
     item = api_get(f"work-items/{uuid}/")
