@@ -1,9 +1,10 @@
 """Shared API layer for Plane REST API.
 
 Provides authentication, retry with backoff, rate limit handling,
-profile loading, and HTTP methods (GET, POST, PATCH).
+profile loading, and HTTP methods (GET, POST, PATCH, DELETE).
 
-Used by plane_snapshot.py (read) and plane_write.py (write).
+Consumers: plane_snapshot.py, plane_fetch.py, plane_write.py.
+plane_diff.py is offline (no API).
 """
 
 import html
