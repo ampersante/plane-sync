@@ -27,7 +27,7 @@ from plane_api import (
     api_get, api_get_list, api_get_paginated, load_profile,
     html_to_text, detect_prefix,
 )
-from plane_md import INTAKE_STATUS, esc_md_cell, format_item_id
+from plane_md import INTAKE_STATUS, STATE_GROUP_COLS, count_by_state_group, esc_md_cell, format_item_id
 
 # Concurrency for per-item N+1 fetches (relations, page contents). Conservative
 # default against Plane cloud rate limit (~50 req/min); 429s are handled by the
@@ -311,18 +311,15 @@ def render_markdown(data: dict, maps: dict, warnings: list[str],
         item["id"]: maps["state"].get(item.get("state", ""), {}).get("group")
         for item in work_items
     }
-    _col_groups = [("completed", "Done"), ("started", "In Progress"),
-                   ("unstarted", "Todo"), ("backlog", "Backlog"), ("cancelled", "Cancelled")]
     lines.append("## Modules")
     lines.append("| Name | Total | Done | In Progress | Todo | Backlog | Cancelled |")
     lines.append("|---|---|---|---|---|---|---|")
     for m in sorted(data["modules"], key=lambda x: x.get("sort_order", 0)):
-        counts = {g: 0 for g, _ in _col_groups}
-        for item_id in data["module_membership"].get(m["id"], set()):
-            grp = item_state_group.get(item_id)
-            if grp in counts:
-                counts[grp] += 1
-        cells = " | ".join(str(counts[g]) for g, _ in _col_groups)
+        counts = count_by_state_group(
+            item_state_group.get(item_id)
+            for item_id in data["module_membership"].get(m["id"], set())
+        )
+        cells = " | ".join(str(counts[g]) for g, _ in STATE_GROUP_COLS)
         lines.append(f"| {esc_md_cell(m['name'])} | {m.get('total_issues', 0)} | {cells} |")
     lines.append("")
 

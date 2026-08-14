@@ -5,6 +5,8 @@ import unittest
 from plane_md import (
     INTAKE_STATUS,
     INTAKE_STATUS_VALUE,
+    STATE_GROUP_COLS,
+    count_by_state_group,
     esc_md_cell,
     format_item_id,
     unesc_md_cell,
@@ -87,6 +89,70 @@ class TestIntakeStatusMaps(unittest.TestCase):
             self.assertEqual(INTAKE_STATUS[INTAKE_STATUS_VALUE[label]], label)
         self.assertEqual(len(INTAKE_STATUS), len(INTAKE_STATUS_VALUE))
         self.assertEqual(len(set(INTAKE_STATUS.values())), len(INTAKE_STATUS))
+
+
+class TestStateGroupCols(unittest.TestCase):
+    def test_exact_order_and_labels(self):
+        self.assertEqual(
+            STATE_GROUP_COLS,
+            [
+                ("completed", "Done"),
+                ("started", "In Progress"),
+                ("unstarted", "Todo"),
+                ("backlog", "Backlog"),
+                ("cancelled", "Cancelled"),
+            ],
+        )
+
+
+class TestCountByStateGroup(unittest.TestCase):
+    def test_counts_known_including_cancelled(self):
+        groups = [
+            "completed",
+            "started",
+            "started",
+            "unstarted",
+            "backlog",
+            "backlog",
+            "backlog",
+            "cancelled",
+            "cancelled",
+        ]
+        self.assertEqual(
+            count_by_state_group(groups),
+            {
+                "completed": 1,
+                "started": 2,
+                "unstarted": 1,
+                "backlog": 3,
+                "cancelled": 2,
+            },
+        )
+
+    def test_ignores_none_and_unknown(self):
+        groups = ["completed", None, "unknown", "triage", "started", "", "cancelled"]
+        self.assertEqual(
+            count_by_state_group(groups),
+            {
+                "completed": 1,
+                "started": 1,
+                "unstarted": 0,
+                "backlog": 0,
+                "cancelled": 1,
+            },
+        )
+
+    def test_empty_iterable(self):
+        self.assertEqual(
+            count_by_state_group([]),
+            {
+                "completed": 0,
+                "started": 0,
+                "unstarted": 0,
+                "backlog": 0,
+                "cancelled": 0,
+            },
+        )
 
 
 if __name__ == "__main__":

@@ -25,7 +25,7 @@ from plane_api import (
     api_get, api_get_list, api_get_paginated, load_profile,
     html_to_text, detect_prefix,
 )
-from plane_md import INTAKE_STATUS, format_item_id
+from plane_md import INTAKE_STATUS, STATE_GROUP_COLS, count_by_state_group, format_item_id
 
 
 _UUID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.I)
@@ -453,15 +453,11 @@ def render_module_md(data: dict) -> str:
 
     # Per-state counts recomputed locally from items: Plane API's *_issues fields are
     # unreliable (return ~1 per column regardless of module size). total_issues is correct.
-    _groups = [("completed", "Done"), ("started", "In Progress"),
-               ("unstarted", "Todo"), ("backlog", "Backlog"), ("cancelled", "Cancelled")]
-    counts = {g: 0 for g, _ in _groups}
-    for it in items:
-        grp = state_map.get(it.get("state", ""), {}).get("group")
-        if grp in counts:
-            counts[grp] += 1
+    counts = count_by_state_group(
+        state_map.get(it.get("state", ""), {}).get("group") for it in items
+    )
     lines.append(f"| Total | {module.get('total_issues', len(items))} |")
-    for g, label in _groups:
+    for g, label in STATE_GROUP_COLS:
         lines.append(f"| {label} | {counts[g]} |")
 
     lines.append("")
