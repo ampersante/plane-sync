@@ -25,12 +25,10 @@ from plane_api import (
     api_get, api_get_list, api_get_paginated, load_profile,
     html_to_text,
 )
-from plane_md import format_item_id
+from plane_md import INTAKE_STATUS, format_item_id
 
 
 _UUID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.I)
-
-INTAKE_STATUS = {-2: "pending", -1: "rejected", 0: "snoozed", 1: "accepted", 2: "duplicate"}
 
 
 def is_uuid(s: str) -> bool:

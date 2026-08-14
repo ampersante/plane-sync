@@ -24,15 +24,7 @@ from plane_api import (
     load_dotenv, set_base_url, api_get, api_get_list, api_get_paginated,
     api_post, api_patch, api_delete, load_profile,
 )
-from plane_md import format_item_id, unesc_md_cell
-
-
-
-# Triage status label → Plane numeric value (mirror of INTAKE_STATUS in
-# plane_snapshot.py; kept local to avoid importing the snapshot module).
-INTAKE_STATUS_VALUE = {
-    "pending": -2, "rejected": -1, "snoozed": 0, "accepted": 1, "duplicate": 2,
-}
+from plane_md import INTAKE_STATUS_VALUE, format_item_id, unesc_md_cell
 
 
 # ── Data structures ─────────────────────────────────────────────────────────

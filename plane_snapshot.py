@@ -27,11 +27,7 @@ from plane_api import (
     api_get, api_get_list, api_get_paginated, load_profile,
     html_to_text,
 )
-from plane_md import esc_md_cell, format_item_id
-
-
-
-INTAKE_STATUS = {-2: "pending", -1: "rejected", 0: "snoozed", 1: "accepted", 2: "duplicate"}
+from plane_md import INTAKE_STATUS, esc_md_cell, format_item_id
 
 # Concurrency for per-item N+1 fetches (relations, page contents). Conservative
 # default against Plane cloud rate limit (~50 req/min); 429s are handled by the

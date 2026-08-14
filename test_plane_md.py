@@ -1,8 +1,14 @@
-"""Unit tests for plane_md cell escape helpers."""
+"""Unit tests for plane_md cell escape helpers and intake status maps."""
 
 import unittest
 
-from plane_md import esc_md_cell, format_item_id, unesc_md_cell
+from plane_md import (
+    INTAKE_STATUS,
+    INTAKE_STATUS_VALUE,
+    esc_md_cell,
+    format_item_id,
+    unesc_md_cell,
+)
 
 
 class TestFormatItemId(unittest.TestCase):
@@ -54,6 +60,33 @@ class TestEscUnescRoundtrip(unittest.TestCase):
     def test_newline_not_restored(self):
         # esc collapses newlines to spaces; unesc cannot restore them.
         self.assertEqual(unesc_md_cell(esc_md_cell("a\nb")), "a b")
+
+
+class TestIntakeStatusMaps(unittest.TestCase):
+    def test_expected_keys_and_labels(self):
+        self.assertEqual(
+            INTAKE_STATUS,
+            {
+                -2: "pending",
+                -1: "rejected",
+                0: "snoozed",
+                1: "accepted",
+                2: "duplicate",
+            },
+        )
+
+    def test_value_is_inverse(self):
+        self.assertEqual(
+            INTAKE_STATUS_VALUE,
+            {label: value for value, label in INTAKE_STATUS.items()},
+        )
+
+    def test_bijective_roundtrip(self):
+        for value, label in INTAKE_STATUS.items():
+            self.assertEqual(INTAKE_STATUS_VALUE[label], value)
+            self.assertEqual(INTAKE_STATUS[INTAKE_STATUS_VALUE[label]], label)
+        self.assertEqual(len(INTAKE_STATUS), len(INTAKE_STATUS_VALUE))
+        self.assertEqual(len(set(INTAKE_STATUS.values())), len(INTAKE_STATUS))
 
 
 if __name__ == "__main__":
