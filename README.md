@@ -72,13 +72,13 @@ python3 plane_snapshot.py --profile my-project
   python3 plane_fetch.py --profile my-project 108
   ```
 
-- **Хочешь создать или обновить задачи?** Смотри `example_write.md` для формата, затем:
+- **Хочешь создать или обновить задачи?** Смотри `examples/example_write.md` для формата, затем:
   ```bash
   python3 plane_write.py --profile my-project -i my-tasks.md           # превью
   python3 plane_write.py --profile my-project -i my-tasks.md --execute # применить
   ```
 
-- **Нужна пошаговая инструкция?** Смотри [GUIDE.md](GUIDE.md)
+- **Нужна пошаговая инструкция?** Смотри [docs/GUIDE.md](docs/GUIDE.md)
 
 ## Использование как плагина к рабочему проекту
 
@@ -159,7 +159,7 @@ python3 plane_fetch.py --profile my-project <идентификатор>
 python3 plane_write.py --profile my-project -i file.md [--execute]
 ```
 
-Без `--execute` только показывает что произойдёт (dry run). Формат входного файла — в `example_write.md`.
+Без `--execute` только показывает что произойдёт (dry run). Формат входного файла — в `examples/example_write.md`.
 
 ### Diff (что изменилось между снапшотами)
 
@@ -178,6 +178,19 @@ python3 plane_snapshot.py -w my-workspace -p <project-uuid> -o ./snapshot.md
 ```
 
 </details>
+
+## Структура репозитория
+
+| Путь | Назначение |
+|------|------------|
+| `plane_*.py`, `plane_md.py` | CLI и код (запуск из корня) |
+| `profiles.example.json` | Шаблон профилей → `profiles.json` |
+| `examples/` | Примеры MD для write |
+| `tests/` | Unit-тесты и fixtures для smoke |
+| `scripts/smoke_offline.sh` | Офлайн-проверка (diff golden + tests) |
+| `golden/` | Эталоны smoke |
+| `docs/GUIDE.md` | Пошаговая шпаргалка |
+| `archive/` | Закрытые задачи (агентная память) |
 
 ## Лицензия
 

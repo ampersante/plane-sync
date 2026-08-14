@@ -1,23 +1,25 @@
 #!/usr/bin/env bash
-# Offline smoke gate: CLI help, plane_diff identity vs golden, optional unittest, negative exit.
+# Offline smoke gate: CLI help, plane_diff identity vs golden, unittest, negative exit.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+
+FIXTURE=tests/fixtures/test_snapshot.md
 
 python3 plane_diff.py --help >/dev/null
 python3 plane_snapshot.py --help >/dev/null
 python3 plane_fetch.py --help >/dev/null
 python3 plane_write.py --help >/dev/null
 
-python3 plane_diff.py test_snapshot.md test_snapshot.md > /tmp/plane_sync_diff_identity.md
+python3 plane_diff.py "$FIXTURE" "$FIXTURE" > /tmp/plane_sync_diff_identity.md
 diff -u golden/offline/diff_identity.expected.md /tmp/plane_sync_diff_identity.md
 
-python3 plane_diff.py test_snapshot.md test_snapshot.md --json > /tmp/plane_sync_diff_identity.json
+python3 plane_diff.py "$FIXTURE" "$FIXTURE" --json > /tmp/plane_sync_diff_identity.json
 diff -u golden/offline/diff_identity.expected.json /tmp/plane_sync_diff_identity.json
 
-if [[ -f test_plane_md.py ]]; then
-  python3 -m unittest test_plane_md.py -v
+if [[ -f tests/test_plane_md.py ]]; then
+  python3 -m unittest discover -s tests -p 'test_*.py' -v
 fi
 
 set +e
