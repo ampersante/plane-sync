@@ -19,7 +19,7 @@ import re
 import sys
 from pathlib import Path
 
-from plane_md import unesc_md_cell
+from plane_md import split_md_table_row, unesc_md_cell
 
 # Fields compared between two versions of the same work item.
 _FIELDS = ["name", "state", "priority", "labels", "assignees", "module"]
@@ -38,7 +38,7 @@ def _iter_tables(md_text: str):
     for line in md_text.splitlines():
         stripped = line.strip()
         if stripped.startswith("|"):
-            cells = [c.strip() for c in stripped.strip("|").split("|")]
+            cells = split_md_table_row(stripped)
             # Separator row
             if all(set(c) <= {"-", ":"} and c for c in cells):
                 continue

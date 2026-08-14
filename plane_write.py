@@ -24,7 +24,7 @@ from plane_api import (
     load_dotenv, set_base_url, api_get, api_get_list, api_get_paginated,
     api_post, api_patch, api_delete, load_profile, detect_prefix,
 )
-from plane_md import INTAKE_STATUS_VALUE, format_item_id, unesc_md_cell
+from plane_md import INTAKE_STATUS_VALUE, format_item_id, split_md_table_row, unesc_md_cell
 
 
 # ── Data structures ─────────────────────────────────────────────────────────
@@ -266,7 +266,7 @@ def _parse_table(text: str) -> tuple[list[str], list[tuple[list[str], int]]]:
         line = line.strip()
         if not line.startswith("|"):
             continue
-        cells = [c.strip() for c in line.strip("|").split("|")]
+        cells = split_md_table_row(line)
         if not headers:
             headers = [h.lower() for h in cells]
             continue

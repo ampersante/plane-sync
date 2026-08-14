@@ -47,3 +47,8 @@ def esc_md_cell(text: str) -> str:
 def unesc_md_cell(text: str) -> str:
     """Unescape pipe characters from markdown table cells."""
     return text.replace("\\|", "|")
+
+
+def split_md_table_row(line: str) -> list[str]:
+    """Naive markdown table row → cells. Does not handle escaped pipes."""
+    return [c.strip() for c in line.strip().strip("|").split("|")]

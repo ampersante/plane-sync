@@ -9,6 +9,7 @@ from plane_md import (
     count_by_state_group,
     esc_md_cell,
     format_item_id,
+    split_md_table_row,
     unesc_md_cell,
 )
 
@@ -62,6 +63,39 @@ class TestEscUnescRoundtrip(unittest.TestCase):
     def test_newline_not_restored(self):
         # esc collapses newlines to spaces; unesc cannot restore them.
         self.assertEqual(unesc_md_cell(esc_md_cell("a\nb")), "a b")
+
+
+class TestSplitMdTableRow(unittest.TestCase):
+    def test_basic_row(self):
+        self.assertEqual(
+            split_md_table_row("| a | b | c |"),
+            ["a", "b", "c"],
+        )
+
+    def test_strips_outer_whitespace(self):
+        self.assertEqual(
+            split_md_table_row("  | x | y |  "),
+            ["x", "y"],
+        )
+
+    def test_empty_cell(self):
+        self.assertEqual(
+            split_md_table_row("| a |  | b |"),
+            ["a", "", "b"],
+        )
+
+    def test_naive_escaped_pipe_not_preserved(self):
+        # Naive split: escaped pipes are still cell boundaries.
+        self.assertEqual(
+            split_md_table_row("| a\\|b | c |"),
+            ["a\\", "b", "c"],
+        )
+
+    def test_separator_like_cells(self):
+        self.assertEqual(
+            split_md_table_row("| --- | :---: | ---: |"),
+            ["---", ":---:", "---:"],
+        )
 
 
 class TestIntakeStatusMaps(unittest.TestCase):
