@@ -28,7 +28,7 @@ jobs:
           git archive --prefix=plane-sync-ci/ -o "$RUNNER_TEMP/t.tgz" HEAD
           export HOME="$(mktemp -d)"
           PLANE_SYNC_TARBALL="$RUNNER_TEMP/t.tgz" bash install.sh
-          "$HOME/.local/bin/plane-sync" --version
+          test "$("$HOME/.local/bin/plane-sync" --version)" = "plane-sync $(python3 -c 'import plane_api;print(plane_api.__version__)')"
           bash install.sh --uninstall
           if [[ -e "$HOME/.local/share/plane-sync" || -e "$HOME/.local/bin/plane-sync" ]]; then
             echo "uninstall did not remove expected paths" >&2
