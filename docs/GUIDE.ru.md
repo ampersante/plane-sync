@@ -14,7 +14,7 @@
 
 ## Шаг 2. Сохрани ключ
 
-Открой папку `plane-sync` и создай файл `.env` (именно с точкой в начале).
+Создай файл `.env` (именно с точкой в начале) — в своём рабочем проекте, или в `~/.config/plane-sync/.env`.
 
 Внутри напиши одну строку:
 
@@ -28,13 +28,16 @@ PLANE_API_TOKEN=plane_api_вставь_свой_токен_сюда
 
 ## Шаг 3. Настрой профиль проекта
 
-Скопируй файл-пример:
+Создай каталог конфигурации и скопируй в него файл-пример:
 
 ```bash
-cp profiles.example.json profiles.json
+mkdir -p ~/.config/plane-sync
+cp profiles.example.json ~/.config/plane-sync/profiles.json
 ```
 
-Открой `profiles.json` в любом текстовом редакторе и заполни свои данные:
+(Если `profiles.example.json` под рукой нет — просто создай файл `~/.config/plane-sync/profiles.json` с содержимым ниже.)
+
+Открой `~/.config/plane-sync/profiles.json` в любом текстовом редакторе и заполни свои данные:
 
 ```json
 {
@@ -56,11 +59,10 @@ cp profiles.example.json profiles.json
 
 ## Шаг 4. Запусти
 
-Открой Терминал, перейди в папку plane-sync и запусти:
+Открой Терминал и запусти:
 
 ```bash
-cd путь/к/plane-sync
-python3 plane_snapshot.py --profile my-project
+plane-sync snapshot --profile my-project
 ```
 
 Увидишь прогресс:
@@ -89,7 +91,7 @@ Done! Snapshot saved to ./snapshot.md
 
 ## Добавление других проектов
 
-Добавь ещё один блок в `profiles.json`:
+Добавь ещё один блок в `~/.config/plane-sync/profiles.json`:
 
 ```json
 {
@@ -111,7 +113,7 @@ Done! Snapshot saved to ./snapshot.md
 Запусти с нужным именем профиля:
 
 ```bash
-python3 plane_snapshot.py --profile another-project
+plane-sync snapshot --profile another-project
 ```
 
 ---
@@ -120,7 +122,7 @@ python3 plane_snapshot.py --profile another-project
 
 | Проблема | Решение |
 |---|---|
-| `PLANE_API_TOKEN not found` | Проверь, что файл `.env` лежит в правильной папке и в нём нет лишних пробелов |
+| `PLANE_API_TOKEN not found` | Проверь, что файл `.env` лежит в правильном месте (рабочий проект или `~/.config/plane-sync/.env`) и в нём нет лишних пробелов |
 | `Authentication failed (HTTP 403)` | Токен неправильный или истёк — создай новый в Plane |
 | `Rate limited, waiting...` | Это нормально. Plane ограничивает количество запросов. Скрипт ждёт и продолжает |
 | `No work items found` | Проверь, что Project UUID правильный |
@@ -132,38 +134,38 @@ python3 plane_snapshot.py --profile another-project
 
 ```bash
 # Скачать снимок проекта
-python3 plane_snapshot.py --profile my-project
+plane-sync snapshot --profile my-project
 
 # С описаниями задач
-python3 plane_snapshot.py --profile my-project --descriptions
+plane-sync snapshot --profile my-project --descriptions
 
 # С заявками из Intake (очередь триажа)
-python3 plane_snapshot.py --profile my-project --intake
+plane-sync snapshot --profile my-project --intake
 
 # Выгрузить страницы проекта в отдельный файл
-python3 plane_snapshot.py --profile my-project --pages
+plane-sync snapshot --profile my-project --pages
 
 # Посмотреть одну задачу
-python3 plane_fetch.py --profile my-project 108
+plane-sync fetch --profile my-project 108
 
 # Посмотреть страницу, модуль или заявку
-python3 plane_fetch.py --profile my-project --page "Название"
-python3 plane_fetch.py --profile my-project --module "Sprint 4"
-python3 plane_fetch.py --profile my-project --intake 486
+plane-sync fetch --profile my-project --page "Название"
+plane-sync fetch --profile my-project --module "Sprint 4"
+plane-sync fetch --profile my-project --intake 486
 
 # Создать задачи из файла (сначала превью, потом применить)
-python3 plane_write.py --profile my-project -i tasks.md
-python3 plane_write.py --profile my-project -i tasks.md --execute
+plane-sync write --profile my-project -i tasks.md
+plane-sync write --profile my-project -i tasks.md --execute
 
 # Сравнить два снимка (что изменилось)
-python3 plane_diff.py old_snapshot.md new_snapshot.md
+plane-sync diff old_snapshot.md new_snapshot.md
 
 # Сохранить в другое место
-python3 plane_snapshot.py --profile my-project -o ~/Desktop/snapshot.md
+plane-sync snapshot --profile my-project -o ~/Desktop/snapshot.md
 
 # Показать все профили
-python3 plane_snapshot.py --list-profiles
+plane-sync profiles
 
 # Подключить агента (Claude Code / Codex / Grok Build) к проекту
-bash ~/tools/plane-sync/scripts/plane-agent-init.sh ~/path/to/project my-project
+plane-sync init my-project
 ```

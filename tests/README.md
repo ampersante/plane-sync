@@ -3,6 +3,7 @@
 | Path | Role |
 |------|------|
 | `test_plane_md.py` | unittest for `plane_md` pure helpers |
+| `test_plane_api.py` | unittest for `plane_api` helpers (retry, rate limit, HTML→text, profiles) |
 | `fixtures/test_snapshot.md` | Golden input for `plane_diff` identity smoke |
 | `fixtures/test_snapshot.pages.md` | Companion pages fixture (optional) |
 

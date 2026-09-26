@@ -1,204 +1,202 @@
 # plane-sync
 
-Выгрузи свой проект из [Plane](https://plane.so) в один читаемый файл — все задачи, статусы, приоритеты, исполнители и зависимости в одном месте. Без установок, без зависимостей, только Python.
+A stdlib-only Python CLI that syncs a [Plane](https://plane.so) project to and from a single, human-readable markdown file — snapshot, fetch, write, diff.
 
-## Что умеет
+Русская версия: [README.ru.md](README.ru.md)
 
-- **Скачать полный снимок проекта** — одна команда, один файл со всем содержимым (задачи, модули, страницы, заявки из Intake)
-- **Посмотреть конкретную задачу** — все детали, комментарии и ссылки по любому work item, странице, модулю или заявке
-- **Создать или обновить задачи из текстового файла** — подготовь изменения офлайн, отправь в Plane когда готово
-- **Сравнить два снимка** — увидеть что добавилось, удалилось и изменилось между выгрузками, без обращения к API
+## What it does
 
-## Быстрый старт
+- **Download a full project snapshot** — one command, one file with everything (work items, modules, pages, Intake requests)
+- **Look up a single item** — full details, comments, and links for any work item, page, module, or intake request
+- **Create or update items from a text file** — draft changes offline, push them to Plane when ready
+- **Diff two snapshots** — see what was added, removed, or changed between exports, with no API calls
 
-**1. Скачай инструмент**
+## Install
+
+### Homebrew
+
+```bash
+brew install ampersante/tap/plane-sync
+```
+
+### curl
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ampersante/plane-sync/main/install.sh | bash
+```
+
+Installs to `~/.local/share/plane-sync` and symlinks `plane-sync` into `~/.local/bin`. Environment overrides:
+
+| Variable | Purpose |
+|---|---|
+| `PLANE_SYNC_VERSION` | Install a specific version instead of latest |
+| `PLANE_SYNC_HOME` | Install directory (default `~/.local/share/plane-sync`) |
+| `PLANE_SYNC_BIN` | Symlink directory (default `~/.local/bin`) |
+
+Uninstall:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ampersante/plane-sync/main/install.sh | bash -s -- --uninstall
+```
+
+### From source
+
+Requires Python 3.10+.
 
 ```bash
 git clone https://github.com/ampersante/plane-sync.git
 cd plane-sync
+./bin/plane-sync --version
 ```
 
-**2. Получи API-ключ Plane**
+Optionally symlink `bin/plane-sync` onto your `PATH`.
 
-Открой [Plane](https://app.plane.so) → нажми на название workspace (внизу слева) → **Settings** → **API Tokens** → **Add API Token**. Скопируй токен.
+## Quick start
 
-**3. Сохрани ключ**
+**1. Get an API token**
 
-Создай файл `.env` в папке своего проекта (или в папке plane-sync — тогда `env` в профиле можно не указывать) с одной строкой:
+Open [Plane](https://app.plane.so) → click the workspace name (bottom left) → **Settings** → **API Tokens** → **Add API Token**. Copy the token.
 
-```
-PLANE_API_TOKEN=plane_api_вставь_свой_токен_сюда
-```
+**2. Set up a profile**
 
-**4. Настрой свой проект**
+Create the config directory and a `profiles.json` in it:
 
 ```bash
-cp profiles.example.json profiles.json
+mkdir -p ~/.config/plane-sync
 ```
-
-Открой `profiles.json` и заполни свои данные:
 
 ```json
 {
   "my-project": {
-    "workspace": "slug-твоего-workspace",
+    "workspace": "my-workspace",
     "project": "00000000-0000-0000-0000-000000000000",
-    "env": "~/path/to/project/.env",
-    "output": "~/path/to/project/snapshot.md"
+    "env": "~/projects/my-app/.env",
+    "output": "~/projects/my-app/snapshot.md"
   }
 }
 ```
 
-Пути `env` и `output` должны быть абсолютными (начинаться с `/` или `~/`) — так скрипты работают из любой папки.
+Save it as `~/.config/plane-sync/profiles.json` (this is `profiles.example.json` with your values filled in). `env` and `output` must be absolute paths or start with `~/`.
 
-Где взять значения:
-- **Workspace slug** — слово после `app.plane.so/` в браузере: `app.plane.so/мой-workspace/...`
-- **Project ID** — длинный ID в URL когда открываешь проект: `app.plane.so/.../projects/00000000-0000-0000-.../...`
+Where to find the values:
+- **Workspace slug** — the segment after `app.plane.so/` in the URL: `app.plane.so/my-workspace/...`
+- **Project UUID** — the long ID in the URL when a project is open: `app.plane.so/.../projects/00000000-0000-0000-0000-000000000000/...`
 
-**5. Запусти**
+**3. Put the token in `.env`**
 
-```bash
-python3 plane_snapshot.py --profile my-project
+```
+PLANE_API_TOKEN=plane_api_your_token_here
 ```
 
-Подожди 1–3 минуты. Готово — открой `snapshot.md` и увидишь весь проект.
+Save this at the `env` path from your profile (or anywhere plane-sync's `.env` search covers — see [Configuration](#configuration)).
 
-## Что дальше
-
-- **Нужны описания задач?** Добавь `--descriptions`:
-  ```bash
-  python3 plane_snapshot.py --profile my-project --descriptions
-  ```
-
-- **Нужны детали по одной задаче?** Используй fetch:
-  ```bash
-  python3 plane_fetch.py --profile my-project 108
-  ```
-
-- **Хочешь создать или обновить задачи?** Смотри `examples/example_write.md` для формата, затем:
-  ```bash
-  python3 plane_write.py --profile my-project -i my-tasks.md           # превью
-  python3 plane_write.py --profile my-project -i my-tasks.md --execute # применить
-  ```
-
-- **Нужна пошаговая инструкция?** Смотри [docs/GUIDE.md](docs/GUIDE.md)
-
-## Использование как плагина к рабочему проекту
-
-plane-sync — утилита, которая живёт в одном месте и обслуживает любое количество проектов. Не нужно копировать её в каждый проект.
-
-**Как это работает:**
-- plane-sync стоит в одной папке (например `~/tools/plane-sync`)
-- Каждый рабочий проект описан в `profiles.json` — workspace, project ID, путь к `.env` и `snapshot.md`
-- Скрипты запускаются из папки plane-sync с `--profile my-project`
-- `.env` и `snapshot.md` лежат в рабочем проекте, не в plane-sync
-
-**Подключение агентов к проекту:**
-
-Один раз настрой профиль, затем для каждого рабочего проекта выполни bootstrap — он запишет в проект готовые инструкции (путь к plane-sync, имя профиля и полный контракт запросов):
+**4. Run it**
 
 ```bash
-bash ~/tools/plane-sync/scripts/plane-agent-init.sh ~/path/to/project my-project
+plane-sync snapshot --profile my-project
 ```
 
-Скрипт добавляет маркированный блок в `CLAUDE.md` и `AGENTS.md` проекта. Повторный запуск идемпотентен; `--remove` убирает блоки.
+Wait 1–3 minutes, then open `snapshot.md` to see the whole project.
 
-| Агент | Что читает автоматически |
+## Usage
+
+### snapshot
+
+Download a project into a single markdown file.
+
+```bash
+plane-sync snapshot --profile my-project
+plane-sync snapshot --profile my-project --descriptions   # include work item descriptions
+plane-sync snapshot --profile my-project --pages           # also export pages to <output>.pages.md
+plane-sync snapshot --profile my-project --intake          # include Intake (triage queue) items
+plane-sync snapshot -w my-workspace -p <project-uuid> -o ./snapshot.md   # without a profile
+```
+
+Other flags: `--prefix XX` to force the work item ID prefix, `-o` for a custom output path, `--env` for a custom `.env` path.
+
+### fetch
+
+Look up one item with full detail (comments, relations, links).
+
+```bash
+plane-sync fetch --profile my-project DEMO-42          # work item, by ID or bare number
+plane-sync fetch --profile my-project --page "Design Doc"
+plane-sync fetch --profile my-project --module "Sprint 4"
+plane-sync fetch --profile my-project --intake "Bug report"
+```
+
+Other flags: `--uuid` to fetch a work item directly by UUID, `--no-comments` / `--no-relations` / `--no-links` / `--no-description` to trim the output, `--json` for raw JSON.
+
+### write
+
+Create, update, or delete items from a markdown file. Dry-run by default.
+
+```bash
+plane-sync write --profile my-project -i my-tasks.md            # preview only
+plane-sync write --profile my-project -i my-tasks.md --execute  # apply changes
+```
+
+Input file format (sections `## Items`, `## Modules`, `## Pages`, `## Intake`, plus `## Descriptions`, `## Relations`, `## Comments`, `## Links`, `## Page Contents`, `## Intake Contents`) is documented with a full example in [`examples/README.md`](examples/README.md) and [`examples/example_write.md`](examples/example_write.md). Other flags: `--allow-duplicates`, `--verbose`.
+
+### diff
+
+Compare two snapshots — no API calls.
+
+```bash
+plane-sync diff old_snapshot.md new_snapshot.md
+plane-sync diff old_snapshot.md new_snapshot.md --json
+```
+
+Shows work items added, removed, or changed (state, priority, name, labels, assignees).
+
+### profiles
+
+List the profiles available to plane-sync (workspace, project, paths):
+
+```bash
+plane-sync profiles
+```
+
+## AI agent integration
+
+Run inside a working project to wire it up for AI coding agents:
+
+```bash
+plane-sync init my-project
+```
+
+This writes a marked block into that project's `CLAUDE.md` and `AGENTS.md` containing the agent contract — the tool location, the profile to use, and the rules for translating natural-language Plane requests into plane-sync calls. It is safe to re-run (idempotent).
+
+```bash
+plane-sync init --remove
+```
+
+removes the block.
+
+| Agent | Reads automatically |
 |---|---|
-| Claude Code | `CLAUDE.md` проекта |
-| Codex | `AGENTS.md` проекта |
-| Grok Build | `AGENTS.md` проекта |
+| Claude Code | project `CLAUDE.md` |
+| Codex | project `AGENTS.md` |
+| Grok Build | project `AGENTS.md` |
 
-Показать все профили: `python3 ~/tools/plane-sync/plane_snapshot.py --list-profiles`.
+## Configuration
 
-> **Примечание:** путь `~/tools/plane-sync` — пример. Используй тот путь, куда склонировал plane-sync. После обновления plane-sync (если менялся `AGENTS.md`) перезапусти bootstrap для проектов.
+**Profiles** — `~/.config/plane-sync/profiles.json` (or `$XDG_CONFIG_HOME/plane-sync/profiles.json` if set). Override the directory with `PLANE_SYNC_CONFIG_DIR`. A legacy `profiles.json` next to the tool still works if the config-dir one is absent. Each profile has `workspace`, `project`, `env`, `output`; `env` and `output` must be absolute or start with `~/`.
 
-## Требования
+**API token** — `PLANE_API_TOKEN`, read from a `.env` file or the environment. The `.env` search order is: current directory upward, then `~/.config/plane-sync/.env`, then the tool's own directory. `--env` overrides the search with an explicit path.
 
-- Python 3.10+
-- Ничего устанавливать не нужно — используется только стандартная библиотека Python
+**Without profiles** — pass `-w/--workspace` and `-p/--project` directly to any subcommand instead of `--profile`.
 
-## Как это работает
-
-Использует Plane REST API с твоим API-ключом. Выгрузка занимает несколько минут, потому что Plane ограничивает скорость запросов — инструмент обрабатывает это автоматически. Все данные остаются локально на твоей машине.
-
-## Продвинутое использование
-
-<details>
-<summary>Все параметры командной строки</summary>
-
-### Snapshot (скачать проект)
+## Development
 
 ```bash
-python3 plane_snapshot.py --profile my-project [опции]
+bash scripts/smoke_offline.sh
 ```
 
-| Опция | Что делает |
-|---|---|
-| `--descriptions` | Включить описания задач |
-| `--pages` | Выгрузить страницы проекта в отдельный файл `<output>.pages.md` |
-| `--intake` | Включить заявки из Intake (очередь триажа) |
-| `-o путь` | Сохранить в конкретный файл |
-| `--prefix XX` | Задать префикс ID задач (по умолчанию определяется автоматически) |
+Offline gate: checks CLI `--help` output, `plane-sync diff` against golden fixtures, the unit tests, and the missing-file error path. No live Plane API calls. This is also the check run in CI on GitHub Actions.
 
-### Fetch (посмотреть один элемент)
+See [`tests/README.md`](tests/README.md), [`examples/README.md`](examples/README.md), and [`golden/README.md`](golden/README.md) for details on the test suite, sample inputs, and golden fixtures.
 
-```bash
-python3 plane_fetch.py --profile my-project <идентификатор>
-```
+## License
 
-| Опция | Что делает |
-|---|---|
-| `PRJ-108` или `108` | Получить work item |
-| `--page "Название"` | Получить страницу |
-| `--module "Название"` | Получить модуль |
-| `--intake "Название"` или `--intake 486` | Получить заявку из Intake |
-| `--uuid UUID` | Получить work item напрямую по UUID (без резолва ID) |
-| `--no-comments` | Пропустить комментарии |
-| `--no-relations` | Пропустить связи |
-| `--no-links` | Пропустить ссылки |
-| `--no-description` | Пропустить описание |
-| `--json` | Вывести сырой JSON |
-
-### Write (создать/обновить/удалить)
-
-```bash
-python3 plane_write.py --profile my-project -i file.md [--execute]
-```
-
-Без `--execute` только показывает что произойдёт (dry run). Формат входного файла — в `examples/example_write.md`.
-
-### Diff (что изменилось между снапшотами)
-
-```bash
-python3 plane_diff.py old_snapshot.md new_snapshot.md
-```
-
-Сравнивает два файла snapshot.md по задачам и показывает что добавилось, удалилось и изменилось (state, приоритет, имя, лейблы, исполнители). Без обращения к API. Добавь `--json` для машинного вывода.
-
-### Запуск без профилей
-
-Можно не использовать профили и передать всё напрямую:
-
-```bash
-python3 plane_snapshot.py -w my-workspace -p <project-uuid> -o ./snapshot.md
-```
-
-</details>
-
-## Структура репозитория
-
-| Путь | Назначение |
-|------|------------|
-| `plane_*.py`, `plane_md.py` | CLI и код (запуск из корня) |
-| `profiles.example.json` | Шаблон профилей → `profiles.json` |
-| `examples/` | Примеры MD для write |
-| `tests/` | Unit-тесты и fixtures для smoke |
-| `scripts/smoke_offline.sh` | Офлайн-проверка (diff golden + tests) |
-| `golden/` | Эталоны smoke |
-| `docs/GUIDE.md` | Пошаговая шпаргалка |
-| `archive/` | Закрытые задачи (агентная память) |
-
-## Лицензия
-
-MIT
+MIT — see [LICENSE](LICENSE).

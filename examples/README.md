@@ -8,6 +8,6 @@ Sample markdown inputs for `plane_write.py` (dry-run / manual tests).
 | `test_write.md` | Update/delete path (`Action` + `ID`) |
 
 ```bash
-python3 plane_write.py --profile test -i examples/example_write.md
-python3 plane_write.py --profile test -i examples/test_write.md
+plane-sync write --profile my-project -i examples/example_write.md
+plane-sync write --profile my-project -i examples/test_write.md
 ```
