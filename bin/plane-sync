@@ -49,6 +49,24 @@ Options:
 """
 
 
+_PROFILES_USAGE = """\
+Usage: plane-sync profiles
+
+List available profiles from the resolved profiles.json (no network, no token).
+
+Config dir precedence: $PLANE_SYNC_CONFIG_DIR > $XDG_CONFIG_HOME/plane-sync > ~/.config/plane-sync.
+"""
+
+_INIT_USAGE = """\
+Usage: plane-sync init <profile>
+       plane-sync init [project_dir] <profile>
+       plane-sync init --remove [project_dir]
+
+Bootstrap (or remove) agent bindings for a project. Without project_dir,
+the current directory is used.
+"""
+
+
 def _usage(stream=None) -> None:
     print(_USAGE, file=stream or sys.stdout, end="")
 
@@ -80,11 +98,17 @@ def main() -> int:
         return 0
 
     if cmd == "profiles":
+        if any(a in ("-h", "--help") for a in rest):
+            print(_PROFILES_USAGE, end="")
+            return 0
         import plane_api
         plane_api.list_profiles()
         return 0
 
     if cmd == "init":
+        if any(a in ("-h", "--help") for a in rest):
+            print(_INIT_USAGE, end="")
+            return 0
         os.environ["PLANE_SYNC_PYTHON"] = sys.executable
         result = subprocess.run(
             ["bash", str(ROOT / "scripts" / "plane-agent-init.sh"), *rest]

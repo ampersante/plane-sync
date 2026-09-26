@@ -540,11 +540,11 @@ def main():
         description="Fetch detailed data for a single Plane item",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
-  python3 plane_fetch.py --profile my-project PRJ-108
-  python3 plane_fetch.py --profile my-project 108 --no-comments
-  python3 plane_fetch.py --profile my-project --page "Meeting Notes"
-  python3 plane_fetch.py --profile my-project --module "Sprint 4"
-  python3 plane_fetch.py --profile my-project --intake "Bug report"
+  plane-sync fetch --profile my-project PRJ-108
+  plane-sync fetch --profile my-project 108 --no-comments
+  plane-sync fetch --profile my-project --page "Meeting Notes"
+  plane-sync fetch --profile my-project --module "Sprint 4"
+  plane-sync fetch --profile my-project --intake "Bug report"
 """)
     parser.add_argument("identifier", nargs="?", default=None,
                         help="Work item ID (e.g. CT-108 or 108)")

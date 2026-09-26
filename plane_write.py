@@ -108,7 +108,8 @@ class IntakeSpec:
     """Parsed from markdown ## Intake table.
 
     Actions: create, update (name/desc/priority and/or triage status), delete.
-    Status changes go through intake-issues/{work_uuid}/status/.
+    Status changes go through intake-issues/{work_uuid}/status/ — keyed by the
+    work-item UUID, not the intake sequence number.
     """
     action: str = "create"                          # "create", "update", or "delete"
     existing_id: str = ""                            # intake sequence number for update/delete (e.g. "486")
@@ -121,7 +122,8 @@ class IntakeSpec:
 
 @dataclass
 class ResolvedIntake:
-    """Ready for API call. Endpoints (all keyed by work-item UUID):
+    """Ready for API call. Endpoints (all keyed by the work-item UUID, not the
+    intake sequence number):
     create → POST intake-issues/; field edit → PATCH work-items/{uuid}/;
     status → PATCH intake-issues/{uuid}/status/; delete → DELETE intake-issues/{uuid}/."""
     spec: IntakeSpec
@@ -964,7 +966,7 @@ def validate_pages(resolved_pages: list[ResolvedPage]) -> tuple[list[str], list[
 def resolve_all_intake(intake_specs: list[IntakeSpec],
                        intake_list: list[dict]) -> list[ResolvedIntake]:
     """Resolve intake specs to API-ready form. All update/delete/status ops key
-    by work-item UUID:
+    by the work-item UUID, not the intake sequence number:
     create → POST intake-issues/ body {"issue": {...}};
     field edit → PATCH work-items/{uuid}/ flat body;
     status → PATCH intake-issues/{uuid}/status/ {"status": N};
@@ -1660,9 +1662,9 @@ def main():
         description="Create work items in Plane from markdown",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
-  python3 plane_write.py --profile my-project -i tasks.md
-  python3 plane_write.py --profile my-project -i tasks.md --execute
-  python3 plane_write.py -w my-workspace -p <project-uuid> -i tasks.md --execute
+  plane-sync write --profile my-project -i tasks.md
+  plane-sync write --profile my-project -i tasks.md --execute
+  plane-sync write -w my-workspace -p <project-uuid> -i tasks.md --execute
 
 Input sections: ## Items, ## Modules, ## Pages, ## Intake (+ ## Descriptions,
 ## Relations, ## Comments, ## Links, ## Page Contents, ## Intake Contents).

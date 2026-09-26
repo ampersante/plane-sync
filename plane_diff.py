@@ -193,8 +193,8 @@ def main():
         description="Diff two Plane snapshots (work items)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
-  python3 plane_diff.py old_snapshot.md new_snapshot.md
-  python3 plane_diff.py old.md new.md --json
+  plane-sync diff old_snapshot.md new_snapshot.md
+  plane-sync diff old.md new.md --json
 """)
     parser.add_argument("old", type=Path, help="Older snapshot.md")
     parser.add_argument("new", type=Path, help="Newer snapshot.md")

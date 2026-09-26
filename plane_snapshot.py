@@ -490,9 +490,9 @@ def main():
         description="Plane project snapshot → markdown",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
-  python3 plane_snapshot.py --profile my-project
-  python3 plane_snapshot.py --profile my-project --descriptions
-  python3 plane_snapshot.py -w my-workspace -p <project-uuid> -o ./snapshot.md
+  plane-sync snapshot --profile my-project
+  plane-sync snapshot --profile my-project --descriptions
+  plane-sync snapshot -w my-workspace -p <project-uuid> -o ./snapshot.md
 """)
     parser.add_argument("--profile",
                         help="Named profile from profiles.json (provides workspace, project, env, output)")
