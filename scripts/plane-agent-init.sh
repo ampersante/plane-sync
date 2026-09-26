@@ -7,6 +7,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PY="${PLANE_SYNC_PYTHON:-python3}"
 
 usage() {
   echo "Usage: $0 [--remove] [project_dir] [profile]" >&2
@@ -40,7 +41,7 @@ fi
 PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
 
 if [[ "$REMOVE" == true ]]; then
-  python3 - "$PROJECT_DIR" <<'PY'
+  "$PY" - "$PROJECT_DIR" <<'PY'
 import sys
 from pathlib import Path
 project_dir = Path(sys.argv[1])
@@ -70,10 +71,12 @@ fi
 {
   read -r OUTPUT
   read -r PAGES
-} < <(python3 - "$ROOT/profiles.json" "$PROFILE" <<'PY'
+} < <("$PY" - "$ROOT" "$PROFILE" <<'PY'
 import json, os, sys
-profiles = json.load(open(sys.argv[1], encoding="utf-8"))
+sys.path.insert(0, sys.argv[1])
+import plane_api
 name = sys.argv[2]
+profiles = json.load(open(plane_api.profiles_path(), encoding="utf-8"))
 if name not in profiles:
     sys.stderr.write(f"profile '{name}' not found\n")
     sys.exit(2)
@@ -87,11 +90,11 @@ print(out)
 print(pages)
 PY
 ) || {
-  python3 "$ROOT/plane_snapshot.py" --list-profiles >&2
+  "$PY" "$ROOT/bin/plane-sync" profiles >&2
   exit 2
 }
 
-python3 - "$PROJECT_DIR" "$ROOT" "$PROFILE" "$OUTPUT" "$PAGES" <<'PY'
+"$PY" - "$PROJECT_DIR" "$ROOT" "$PROFILE" "$OUTPUT" "$PAGES" <<'PY'
 import sys
 from pathlib import Path
 project_dir = Path(sys.argv[1])
@@ -100,16 +103,15 @@ profile = sys.argv[3]
 output = sys.argv[4]
 pages = sys.argv[5]
 
-contract = (root / "AGENTS.md").read_text(encoding="utf-8")
+contract = (root / "docs" / "agent-contract.md").read_text(encoding="utf-8")
 block = f"""<!-- plane-sync:begin -->
 # plane-sync — project bindings
 
-- Tool: `{root}`
 - Profile: `{profile}` (use this for every plane-sync command)
 - Snapshot: `{output}`
 - Pages: `{pages}`
 
-Re-run after plane-sync updates: `bash "{root}/scripts/plane-agent-init.sh" "{project_dir}" "{profile}"`
+Re-run after plane-sync updates: `plane-sync init {profile}`
 
 {contract}
 <!-- plane-sync:end -->
