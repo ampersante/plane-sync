@@ -2,7 +2,13 @@
   "my-project": {
     "workspace": "my-workspace-slug",
     "project": "00000000-0000-0000-0000-000000000000",
-    "env": "~/path/to/project/.env",
-    "output": "~/path/to/project/snapshot.md"
+    "env": "~/project-a/.env",
+    "output": "~/project-a/snapshot.md"
+  },
+  "another-project": {
+    "workspace": "my-workspace-slug",
+    "project": "00000000-0000-0000-0000-000000000001",
+    "env": "~/project-b/.env",
+    "output": "~/project-b/snapshot.md"
   }
 }

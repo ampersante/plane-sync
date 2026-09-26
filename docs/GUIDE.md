@@ -41,10 +41,13 @@ cp profiles.example.json profiles.json
   "my-project": {
     "workspace": "slug-твоего-workspace",
     "project": "00000000-0000-0000-0000-000000000000",
-    "output": "./snapshot.md"
+    "env": "~/path/to/project/.env",
+    "output": "~/path/to/project/snapshot.md"
   }
 }
 ```
+
+Пути `env` и `output` — только абсолютные (`/...` или `~/...`).
 
 **Где взять эти значения:**
 
@@ -93,12 +96,14 @@ Done! Snapshot saved to ./snapshot.md
   "my-project": {
     "workspace": "my-workspace",
     "project": "uuid-первого-проекта",
-    "output": "./snapshot.md"
+    "env": "~/project-a/.env",
+    "output": "~/project-a/snapshot.md"
   },
   "another-project": {
     "workspace": "my-workspace",
     "project": "uuid-второго-проекта",
-    "output": "~/Documents/another-snapshot.md"
+    "env": "~/project-b/.env",
+    "output": "~/project-b/snapshot.md"
   }
 }
 ```
@@ -155,4 +160,10 @@ python3 plane_diff.py old_snapshot.md new_snapshot.md
 
 # Сохранить в другое место
 python3 plane_snapshot.py --profile my-project -o ~/Desktop/snapshot.md
+
+# Показать все профили
+python3 plane_snapshot.py --list-profiles
+
+# Подключить агента (Claude Code / Codex / Grok Build) к проекту
+bash ~/tools/plane-sync/scripts/plane-agent-init.sh ~/path/to/project my-project
 ```

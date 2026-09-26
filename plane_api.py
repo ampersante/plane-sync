@@ -48,10 +48,11 @@ def get_base_url() -> str:
 
 # ── .env loader ─────────────────────────────────────────────────────────────
 
-def load_dotenv(*search_dirs: Path) -> None:
+def load_dotenv(*search_dirs: Path, script_dir: Path | None = None) -> None:
     """Load KEY=VALUE pairs from .env file into os.environ (does not override).
 
-    Searches in given directories, then walks up from current working dir.
+    Searches in given directories, walks up from cwd, then falls back to the
+    tool's own directory (lowest priority).
     """
     candidates = [d / ".env" for d in search_dirs]
     # Also walk up from cwd
@@ -62,6 +63,11 @@ def load_dotenv(*search_dirs: Path) -> None:
         if parent == search:
             break
         search = parent
+
+    # Tool root is the last fallback so a project-level .env always wins.
+    if script_dir is None:
+        script_dir = Path(__file__).resolve().parent
+    candidates.append(script_dir / ".env")
 
     for candidate in candidates:
         if candidate.is_file():
@@ -257,6 +263,48 @@ def load_profile(name: str) -> dict:
         print(f"Error: profile '{name}' not found. Available: {available}", file=sys.stderr)
         sys.exit(1)
     return profiles[name]
+
+
+def validate_profile_paths(profile: dict, *, require_output: bool) -> None:
+    """Require profile env/output paths to be absolute after ~ expansion.
+
+    `env` is always validated (all CLIs consume it); `output` only when the
+    caller actually writes to it.
+    """
+    for key, required in (("env", True), ("output", require_output)):
+        raw = profile.get(key)
+        if not required or raw is None:
+            continue
+        path = Path(os.path.expanduser(str(raw)))
+        if not path.is_absolute():
+            print(
+                f"Error: profile field '{key}' must be an absolute path, got '{raw}'.",
+                file=sys.stderr,
+            )
+            print(f"Use a '~' path (e.g. '~/project/.env') or an absolute path.",
+                  file=sys.stderr)
+            sys.exit(1)
+
+
+def list_profiles(profiles_path: Path | None = None) -> None:
+    """Print available profiles from profiles.json (no network, no token)."""
+    if profiles_path is None:
+        profiles_path = Path(__file__).resolve().parent / "profiles.json"
+    if not profiles_path.is_file():
+        print(f"profiles.json not found at {profiles_path}", file=sys.stderr)
+        sys.exit(1)
+    with open(profiles_path, encoding="utf-8") as f:
+        profiles = json.load(f)
+    if not profiles:
+        print("(no profiles)")
+        return
+    print(f"{'Profile':<20} {'Workspace':<24} {'Project':<40} Output")
+    print("-" * 100)
+    for name, p in profiles.items():
+        workspace = p.get("workspace", "-")
+        project = p.get("project", "-")
+        output = p.get("output", "-")
+        print(f"{name:<20} {workspace:<24} {project:<40} {output}")
 
 
 # ── HTML → text ────────────────────────────────────────────────────────────

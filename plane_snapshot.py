@@ -25,7 +25,7 @@ from pathlib import Path
 from plane_api import (
     load_dotenv, get_warnings, set_base_url,
     api_get, api_get_list, api_get_paginated, load_profile,
-    html_to_text, detect_prefix,
+    html_to_text, detect_prefix, validate_profile_paths, list_profiles,
 )
 from plane_md import INTAKE_STATUS, STATE_GROUP_COLS, count_by_state_group, esc_md_cell, format_item_id
 
@@ -496,6 +496,8 @@ def main():
 """)
     parser.add_argument("--profile",
                         help="Named profile from profiles.json (provides workspace, project, env, output)")
+    parser.add_argument("--list-profiles", action="store_true",
+                        help="List available profiles and exit")
     parser.add_argument("-w", "--workspace",
                         help="Plane workspace slug")
     parser.add_argument("-p", "--project",
@@ -514,6 +516,10 @@ def main():
                         help="Path to .env file (default: search current dir and parents)")
     args = parser.parse_args()
 
+    if args.list_profiles:
+        list_profiles()
+        sys.exit(0)
+
     # Apply profile defaults (CLI args override profile values)
     if args.profile:
         profile = load_profile(args.profile)
@@ -525,6 +531,7 @@ def main():
             args.output = Path(os.path.expanduser(profile["output"]))
         if not args.env and "env" in profile:
             args.env = Path(os.path.expanduser(profile["env"]))
+        validate_profile_paths(profile, require_output=True)
 
     # Defaults for values still not set
     if not args.output:

@@ -23,7 +23,7 @@ from pathlib import Path
 from plane_api import (
     load_dotenv, set_base_url,
     api_get, api_get_list, api_get_paginated, load_profile,
-    html_to_text, detect_prefix,
+    html_to_text, detect_prefix, validate_profile_paths, list_profiles,
 )
 from plane_md import INTAKE_STATUS, STATE_GROUP_COLS, count_by_state_group, format_item_id
 
@@ -550,6 +550,8 @@ def main():
                         help="Work item ID (e.g. CT-108 or 108)")
     parser.add_argument("--profile",
                         help="Named profile from profiles.json")
+    parser.add_argument("--list-profiles", action="store_true",
+                        help="List available profiles and exit")
     parser.add_argument("-w", "--workspace",
                         help="Plane workspace slug")
     parser.add_argument("-p", "--project",
@@ -583,6 +585,10 @@ def main():
 
     args = parser.parse_args()
 
+    if args.list_profiles:
+        list_profiles()
+        sys.exit(0)
+
     # Apply profile
     if args.profile:
         profile = load_profile(args.profile)
@@ -592,6 +598,7 @@ def main():
             args.project = profile.get("project")
         if not args.env and "env" in profile:
             args.env = Path(os.path.expanduser(profile["env"]))
+        validate_profile_paths(profile, require_output=False)
 
     # Validate
     if not args.workspace or not args.project:

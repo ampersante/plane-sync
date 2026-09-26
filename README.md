@@ -24,7 +24,7 @@ cd plane-sync
 
 **3. Сохрани ключ**
 
-Создай файл `.env` в папке plane-sync с одной строкой:
+Создай файл `.env` в папке своего проекта (или в папке plane-sync — тогда `env` в профиле можно не указывать) с одной строкой:
 
 ```
 PLANE_API_TOKEN=plane_api_вставь_свой_токен_сюда
@@ -43,10 +43,13 @@ cp profiles.example.json profiles.json
   "my-project": {
     "workspace": "slug-твоего-workspace",
     "project": "00000000-0000-0000-0000-000000000000",
-    "output": "./snapshot.md"
+    "env": "~/path/to/project/.env",
+    "output": "~/path/to/project/snapshot.md"
   }
 }
 ```
+
+Пути `env` и `output` должны быть абсолютными (начинаться с `/` или `~/`) — так скрипты работают из любой папки.
 
 Где взять значения:
 - **Workspace slug** — слово после `app.plane.so/` в браузере: `app.plane.so/мой-workspace/...`
@@ -90,21 +93,25 @@ plane-sync — утилита, которая живёт в одном мест�
 - Скрипты запускаются из папки plane-sync с `--profile my-project`
 - `.env` и `snapshot.md` лежат в рабочем проекте, не в plane-sync
 
-**Подключение к Claude Code через symlink:**
+**Подключение агентов к проекту:**
 
-Чтобы Claude в рабочем проекте умел работать с Plane (запросы на живом языке, поиск задач и документов) — создай symlink на CLAUDE.md:
+Один раз настрой профиль, затем для каждого рабочего проекта выполни bootstrap — он запишет в проект готовые инструкции (путь к plane-sync, имя профиля и полный контракт запросов):
 
 ```bash
-# Из папки рабочего проекта
-ln -s ~/tools/plane-sync/CLAUDE.md .claude/plane-sync.md
+bash ~/tools/plane-sync/scripts/plane-agent-init.sh ~/path/to/project my-project
 ```
 
-После этого Claude в рабочем проекте будет:
-- Понимать запросы вроде "найди диздок по кор геймплею"
-- Знать что "диздок" = page, "задача" = work item
-- Работать через snapshot и скрипты, не через MCP
+Скрипт добавляет маркированный блок в `CLAUDE.md` и `AGENTS.md` проекта. Повторный запуск идемпотентен; `--remove` убирает блоки.
 
-> **Примечание:** путь `~/tools/plane-sync` — пример. Используй тот путь, куда склонировал plane-sync.
+| Агент | Что читает автоматически |
+|---|---|
+| Claude Code | `CLAUDE.md` проекта |
+| Codex | `AGENTS.md` проекта |
+| Grok Build | `AGENTS.md` проекта |
+
+Показать все профили: `python3 ~/tools/plane-sync/plane_snapshot.py --list-profiles`.
+
+> **Примечание:** путь `~/tools/plane-sync` — пример. Используй тот путь, куда склонировал plane-sync. После обновления plane-sync (если менялся `AGENTS.md`) перезапусти bootstrap для проектов.
 
 ## Требования
 

@@ -23,6 +23,7 @@ from pathlib import Path
 from plane_api import (
     load_dotenv, set_base_url, api_get, api_get_list, api_get_paginated,
     api_post, api_patch, api_delete, load_profile, detect_prefix,
+    validate_profile_paths, list_profiles,
 )
 from plane_md import INTAKE_STATUS_VALUE, format_item_id, split_md_table_row, unesc_md_cell
 
@@ -1668,11 +1669,13 @@ Input sections: ## Items, ## Modules, ## Pages, ## Intake (+ ## Descriptions,
 """)
     parser.add_argument("--profile",
                         help="Named profile from profiles.json")
+    parser.add_argument("--list-profiles", action="store_true",
+                        help="List available profiles and exit")
     parser.add_argument("-w", "--workspace",
                         help="Plane workspace slug")
     parser.add_argument("-p", "--project",
                         help="Plane project UUID")
-    parser.add_argument("-i", "--input", type=Path, required=True,
+    parser.add_argument("-i", "--input", type=Path, required=False,
                         help="Path to markdown input file")
     parser.add_argument("--execute", action="store_true",
                         help="Actually create items (default: dry-run only)")
@@ -1684,6 +1687,10 @@ Input sections: ## Items, ## Modules, ## Pages, ## Intake (+ ## Descriptions,
                         help="Path to .env file")
     args = parser.parse_args()
 
+    if args.list_profiles:
+        list_profiles()
+        sys.exit(0)
+
     # Apply profile defaults
     if args.profile:
         profile = load_profile(args.profile)
@@ -1693,10 +1700,16 @@ Input sections: ## Items, ## Modules, ## Pages, ## Intake (+ ## Descriptions,
             args.project = profile.get("project")
         if not args.env and "env" in profile:
             args.env = Path(os.path.expanduser(profile["env"]))
+        validate_profile_paths(profile, require_output=False)
 
     # Validate required args
     if not args.workspace or not args.project:
         print("Error: --workspace and --project are required (or use --profile).", file=sys.stderr)
+        parser.print_usage(sys.stderr)
+        sys.exit(1)
+
+    if not args.input:
+        print("Error: -i/--input is required (or use --list-profiles).", file=sys.stderr)
         parser.print_usage(sys.stderr)
         sys.exit(1)
 
