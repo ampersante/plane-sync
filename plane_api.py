@@ -19,6 +19,8 @@ import urllib.request
 from html.parser import HTMLParser
 from pathlib import Path
 
+__version__ = "0.1.0"
+
 # ── Module state ────────────────────────────────────────────────────────────
 
 _warnings: list[str] = []
@@ -46,13 +48,44 @@ def get_base_url() -> str:
     return _base_url
 
 
+# ── Config dir ───────────────────────────────────────────────────────────────
+
+def config_dir() -> Path:
+    """Resolve the plane-sync config directory.
+
+    Precedence: $PLANE_SYNC_CONFIG_DIR > $XDG_CONFIG_HOME/plane-sync > ~/.config/plane-sync.
+    """
+    env_dir = os.environ.get("PLANE_SYNC_CONFIG_DIR")
+    if env_dir:
+        return Path(env_dir).expanduser()
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    if xdg:
+        return Path(xdg).expanduser() / "plane-sync"
+    return Path.home() / ".config" / "plane-sync"
+
+
+def profiles_path() -> Path:
+    """Resolve profiles.json: config dir first, else legacy tool-root copy.
+
+    Falls back to the config dir path (even if absent) so callers get a
+    consistent, reportable location.
+    """
+    config_candidate = config_dir() / "profiles.json"
+    if config_candidate.is_file():
+        return config_candidate
+    legacy_candidate = Path(__file__).resolve().parent / "profiles.json"
+    if legacy_candidate.is_file():
+        return legacy_candidate
+    return config_candidate
+
+
 # ── .env loader ─────────────────────────────────────────────────────────────
 
 def load_dotenv(*search_dirs: Path, script_dir: Path | None = None) -> None:
     """Load KEY=VALUE pairs from .env file into os.environ (does not override).
 
     Searches in given directories, walks up from cwd, then falls back to the
-    tool's own directory (lowest priority).
+    config dir, then the tool's own directory (lowest priority).
     """
     candidates = [d / ".env" for d in search_dirs]
     # Also walk up from cwd
@@ -63,6 +96,10 @@ def load_dotenv(*search_dirs: Path, script_dir: Path | None = None) -> None:
         if parent == search:
             break
         search = parent
+
+    # Config dir ranks below the cwd walk-up but above the tool root, so a
+    # project-level .env always wins over the user's global config.
+    candidates.append(config_dir() / ".env")
 
     # Tool root is the last fallback so a project-level .env always wins.
     if script_dir is None:
@@ -103,7 +140,7 @@ def _headers() -> dict:
     return {
         "X-API-Key": get_token(),
         "Content-Type": "application/json",
-        "User-Agent": "PlaneSync/1.0",
+        "User-Agent": f"plane-sync/{__version__}",
         "Accept": "application/json",
     }
 
@@ -251,12 +288,14 @@ def detect_prefix(*, default: str = "??") -> str:
 # ── Profile loader ──────────────────────────────────────────────────────────
 
 def load_profile(name: str) -> dict:
-    """Load a named profile from profiles.json next to the calling script."""
-    profiles_path = Path(__file__).resolve().parent / "profiles.json"
-    if not profiles_path.is_file():
-        print(f"Error: profiles.json not found at {profiles_path}", file=sys.stderr)
+    """Load a named profile from profiles.json (config dir, or legacy tool-root fallback)."""
+    path = profiles_path()
+    if not path.is_file():
+        print(f"Error: profiles.json not found at {path}", file=sys.stderr)
+        print("Create it at ~/.config/plane-sync/profiles.json (see profiles.example.json).",
+              file=sys.stderr)
         sys.exit(1)
-    with open(profiles_path, encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         profiles = json.load(f)
     if name not in profiles:
         available = ", ".join(profiles.keys()) or "(none)"
@@ -286,14 +325,16 @@ def validate_profile_paths(profile: dict, *, require_output: bool) -> None:
             sys.exit(1)
 
 
-def list_profiles(profiles_path: Path | None = None) -> None:
+def list_profiles(path: Path | None = None) -> None:
     """Print available profiles from profiles.json (no network, no token)."""
-    if profiles_path is None:
-        profiles_path = Path(__file__).resolve().parent / "profiles.json"
-    if not profiles_path.is_file():
-        print(f"profiles.json not found at {profiles_path}", file=sys.stderr)
+    if path is None:
+        path = profiles_path()
+    if not path.is_file():
+        print(f"profiles.json not found at {path}", file=sys.stderr)
+        print("Create it at ~/.config/plane-sync/profiles.json (see profiles.example.json).",
+              file=sys.stderr)
         sys.exit(1)
-    with open(profiles_path, encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         profiles = json.load(f)
     if not profiles:
         print("(no profiles)")

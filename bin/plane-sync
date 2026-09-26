@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""plane-sync CLI dispatcher.
+
+Thin wrapper around the project's plane_*.py entry points, so the tool can be
+invoked as `plane-sync <subcommand> ...` regardless of install location.
+
+The Python version check runs before any project module is imported: those
+modules use 3.10+ syntax (e.g. `dict | None`), which would raise a SyntaxError
+on older interpreters instead of this friendly message.
+"""
+
+import sys
+
+if sys.version_info < (3, 10):
+    print("Error: plane-sync requires Python 3.10+.", file=sys.stderr)
+    print(f"Found Python {sys.version_info.major}.{sys.version_info.minor}.", file=sys.stderr)
+    print("Install a newer Python, e.g.: brew install ampersante/tap/plane-sync", file=sys.stderr)
+    sys.exit(1)
+
+import importlib
+import os
+import subprocess
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+_MODULES = {
+    "snapshot": "plane_snapshot",
+    "fetch": "plane_fetch",
+    "write": "plane_write",
+    "diff": "plane_diff",
+}
+
+_USAGE = """\
+Usage: plane-sync <command> [args...]
+
+Commands:
+  snapshot   Export a Plane project snapshot to markdown
+  fetch      Fetch a single work item / page / module / intake
+  write      Write CRUD changes from a markdown file (dry-run by default)
+  diff       Diff two snapshot.md files (offline)
+  profiles   List available profiles
+  init       Bootstrap agent bindings into a project (see scripts/plane-agent-init.sh)
+
+Options:
+  --version      Print the plane-sync version
+  -h, --help     Show this help
+"""
+
+
+def _usage(stream=None) -> None:
+    print(_USAGE, file=stream or sys.stdout, end="")
+
+
+def main() -> int:
+    argv = sys.argv[1:]
+
+    if not argv:
+        _usage(sys.stderr)
+        return 2
+
+    cmd, rest = argv[0], argv[1:]
+
+    if cmd == "--version":
+        import plane_api
+        print(f"plane-sync {plane_api.__version__}")
+        return 0
+
+    if cmd in ("-h", "--help", "help"):
+        import plane_api
+        _usage()
+        print(f"\nConfig dir: {plane_api.config_dir()}")
+        return 0
+
+    if cmd in _MODULES:
+        sys.argv = [f"plane-sync {cmd}", *rest]
+        module = importlib.import_module(_MODULES[cmd])
+        module.main()
+        return 0
+
+    if cmd == "profiles":
+        import plane_api
+        plane_api.list_profiles()
+        return 0
+
+    if cmd == "init":
+        os.environ["PLANE_SYNC_PYTHON"] = sys.executable
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts" / "plane-agent-init.sh"), *rest]
+        )
+        return result.returncode
+
+    _usage(sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
