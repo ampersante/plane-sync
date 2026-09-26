@@ -81,7 +81,7 @@ fi
 
 INSTALL_SRC="$TMPDIR_SMOKE/src/plane-sync-smoke"
 mkdir -p "$INSTALL_SRC"
-git ls-files -z | tar -c --null -T - -C "$ROOT" | tar -x -C "$INSTALL_SRC"
+git -C "$ROOT" ls-files -z | tar -c -C "$ROOT" --null -T - | tar -x -C "$INSTALL_SRC"
 INSTALL_TARBALL="$TMPDIR_SMOKE/t.tgz"
 tar -czf "$INSTALL_TARBALL" -C "$TMPDIR_SMOKE/src" plane-sync-smoke
 
