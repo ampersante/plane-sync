@@ -159,6 +159,65 @@ if [[ -e "$INSTALL_HOME/.local/share/plane-sync" || -e "$INSTALL_HOME/.local/bin
   exit 1
 fi
 
+# Safety: a foreign regular file at $PLANE_SYNC_BIN/plane-sync must survive
+# --uninstall untouched, even when there is no install dir to remove.
+FOREIGN_HOME="$TMPDIR_SMOKE/foreign_home"
+mkdir -p "$FOREIGN_HOME/.local/bin"
+FOREIGN_BIN_REFERENCE="$TMPDIR_SMOKE/foreign-bin-reference"
+printf '#!/bin/sh\necho not-plane-sync\n' > "$FOREIGN_BIN_REFERENCE"
+cp "$FOREIGN_BIN_REFERENCE" "$FOREIGN_HOME/.local/bin/plane-sync"
+chmod +x "$FOREIGN_HOME/.local/bin/plane-sync"
+
+set +e
+HOME="$FOREIGN_HOME" bash install.sh --uninstall >"$TMPDIR_SMOKE/foreign_uninstall.log" 2>&1
+foreign_uninstall_rc=$?
+set -e
+if [[ ! -f "$FOREIGN_HOME/.local/bin/plane-sync" ]]; then
+  echo "install.sh --uninstall deleted a foreign regular file at plane-sync — data loss" >&2
+  cat "$TMPDIR_SMOKE/foreign_uninstall.log" >&2
+  exit 1
+fi
+if ! cmp -s "$FOREIGN_BIN_REFERENCE" "$FOREIGN_HOME/.local/bin/plane-sync"; then
+  echo "install.sh --uninstall modified the contents of a foreign plane-sync file" >&2
+  exit 1
+fi
+if [[ "$foreign_uninstall_rc" -ne 0 ]]; then
+  echo "note: install.sh --uninstall exited $foreign_uninstall_rc for the foreign-file case (file preserved, which is what matters)" >&2
+fi
+
+# Safety: a foreign symlink (pointing at some unrelated file) must block a
+# fresh install before any download/extraction/PLANE_SYNC_HOME work happens,
+# and must be left unchanged.
+FOREIGN_SYMLINK_HOME="$TMPDIR_SMOKE/foreign_symlink_home"
+mkdir -p "$FOREIGN_SYMLINK_HOME/.local/bin"
+FOREIGN_LINK_TARGET="$TMPDIR_SMOKE/some-other-script"
+printf '#!/bin/sh\necho unrelated\n' > "$FOREIGN_LINK_TARGET"
+ln -s "$FOREIGN_LINK_TARGET" "$FOREIGN_SYMLINK_HOME/.local/bin/plane-sync"
+
+set +e
+HOME="$FOREIGN_SYMLINK_HOME" PLANE_SYNC_TARBALL="$INSTALL_TARBALL" bash install.sh \
+  >"$TMPDIR_SMOKE/foreign_symlink_install.log" 2>&1
+foreign_symlink_install_rc=$?
+set -e
+if [[ "$foreign_symlink_install_rc" -eq 0 ]]; then
+  echo "expected install.sh to refuse a foreign symlink at plane-sync, but it exited 0:" >&2
+  cat "$TMPDIR_SMOKE/foreign_symlink_install.log" >&2
+  exit 1
+fi
+if [[ ! -L "$FOREIGN_SYMLINK_HOME/.local/bin/plane-sync" ]]; then
+  echo "install.sh replaced a foreign symlink at plane-sync instead of refusing" >&2
+  exit 1
+fi
+foreign_symlink_after="$(readlink "$FOREIGN_SYMLINK_HOME/.local/bin/plane-sync")"
+if [[ "$foreign_symlink_after" != "$FOREIGN_LINK_TARGET" ]]; then
+  echo "install.sh changed the target of a foreign symlink at plane-sync" >&2
+  exit 1
+fi
+if [[ -e "$FOREIGN_SYMLINK_HOME/.local/share/plane-sync" ]]; then
+  echo "install.sh created \$PLANE_SYNC_HOME despite refusing a foreign bin symlink — should fail before touching it" >&2
+  exit 1
+fi
+
 # ── bin/plane-sync init ──────────────────────────────────────────────────────
 
 PROJ="$TMPDIR_SMOKE/proj"

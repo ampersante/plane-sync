@@ -33,15 +33,51 @@ guard_owned_install() {
   fi
 }
 
+# Returns success (0) if $PLANE_SYNC_BIN/plane-sync exists and does NOT
+# belong to this install — a regular file, a directory, or a symlink
+# pointing somewhere other than $PLANE_SYNC_HOME/bin/plane-sync. Returns
+# failure (1) if the entry is absent, or is a symlink that already points
+# at our own target (so it's safe to overwrite/remove).
+bin_entry_is_foreign() {
+  local entry="$PLANE_SYNC_BIN/plane-sync"
+  local target="$PLANE_SYNC_HOME/bin/plane-sync"
+
+  if [[ ! -e "$entry" && ! -L "$entry" ]]; then
+    return 1 # absent: nothing to protect
+  fi
+
+  if [[ -L "$entry" ]]; then
+    local link_text
+    link_text="$(readlink "$entry")"
+    if [[ "$link_text" == "$target" ]]; then
+      return 1 # ours, by literal link text
+    fi
+    local resolved_entry resolved_target
+    resolved_entry="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$entry" 2>/dev/null || true)"
+    resolved_target="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$target" 2>/dev/null || true)"
+    if [[ -n "$resolved_entry" && "$resolved_entry" == "$resolved_target" ]]; then
+      return 1 # ours, after resolving to absolute/real paths
+    fi
+    return 0 # symlink pointing elsewhere: foreign
+  fi
+
+  return 0 # regular file or directory: foreign
+}
+
 uninstall() {
   guard_owned_install
+  local bin_foreign=1
+  bin_entry_is_foreign && bin_foreign=0
   if [[ -e "$PLANE_SYNC_HOME" ]]; then
     rm -rf "$PLANE_SYNC_HOME"
     log "Removed $PLANE_SYNC_HOME"
   else
     log "$PLANE_SYNC_HOME does not exist, nothing to remove."
   fi
-  if [[ -L "$PLANE_SYNC_BIN/plane-sync" || -e "$PLANE_SYNC_BIN/plane-sync" ]]; then
+  if [[ "$bin_foreign" -eq 0 ]]; then
+    log "warning: $PLANE_SYNC_BIN/plane-sync exists but is not a symlink to"
+    log "         $PLANE_SYNC_HOME/bin/plane-sync — leaving it untouched."
+  elif [[ -L "$PLANE_SYNC_BIN/plane-sync" || -e "$PLANE_SYNC_BIN/plane-sync" ]]; then
     rm -f "$PLANE_SYNC_BIN/plane-sync"
     log "Removed $PLANE_SYNC_BIN/plane-sync"
   fi
@@ -75,6 +111,14 @@ if ! command -v python3 >/dev/null 2>&1 || ! python3 -c 'import sys; sys.exit(0 
   log "error: plane-sync requires python3 >= 3.10, which was not found on PATH."
   log "  macOS: brew install ampersante/tap/plane-sync   (pulls in a compatible python3)"
   log "  or install Python 3.10+ yourself and re-run this installer."
+  exit 1
+fi
+
+# Refuse to clobber a foreign file/symlink at $PLANE_SYNC_BIN/plane-sync
+# before doing any network/extraction work or touching $PLANE_SYNC_HOME.
+if bin_entry_is_foreign; then
+  log "error: $PLANE_SYNC_BIN/plane-sync already exists and is not a plane-sync symlink."
+  log "       Remove or rename it, or set PLANE_SYNC_BIN to install elsewhere."
   exit 1
 fi
 
