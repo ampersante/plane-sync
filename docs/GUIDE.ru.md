@@ -145,6 +145,9 @@ plane-sync snapshot --profile my-project --intake
 # Выгрузить страницы проекта в отдельный файл
 plane-sync snapshot --profile my-project --pages
 
+# Инкрементальный снимок: перечитать только изменившееся
+plane-sync snapshot --profile my-project --since snapshot.md
+
 # Посмотреть одну задачу
 plane-sync fetch --profile my-project 108
 
@@ -169,3 +172,5 @@ plane-sync profiles
 # Подключить агента (Claude Code / Codex / Grok Build) к проекту
 plane-sync init my-project
 ```
+
+Инкрементальный снимок `--since` и запись задач пачками (bulk write) требуют ключ `"api_version": "auto"` в профиле (`~/.config/plane-sync/profiles.json`); по умолчанию `"1"` — Plane API v1 без изменений. При недоступности v2 всё автоматически работает через v1.

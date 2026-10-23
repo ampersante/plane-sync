@@ -110,9 +110,12 @@ plane-sync snapshot --profile my-project --descriptions   # include work item de
 plane-sync snapshot --profile my-project --pages           # also export pages to <output>.pages.md
 plane-sync snapshot --profile my-project --intake          # include Intake (triage queue) items
 plane-sync snapshot -w my-workspace -p <project-uuid> -o ./snapshot.md   # without a profile
+plane-sync snapshot --profile my-project --since snapshot.md   # incremental (requires api_version: "auto")
 ```
 
 Other flags: `--prefix XX` to force the work item ID prefix, `-o` for a custom output path, `--env` for a custom `.env` path.
+
+**Incremental snapshots** — `--since <snapshot.md>` re-reads only what changed since the previous snapshot. The watermark is the `Listed:` line in that file's header (the time of the last listing), so snapshots written before this version — without a `Listed:` line — need one full re-snapshot first. Changed work items are re-fetched; unchanged lines are carried over byte-for-byte. The savings are on lists, details, and pages: relations are always re-fetched in full (Plane does not update `updated_at` when a relation is created), and page content (`--pages`) is re-read only for pages that changed. Requires `api_version: "auto"` in the profile.
 
 ### fetch
 
@@ -137,6 +140,8 @@ plane-sync write --profile my-project -i my-tasks.md --execute  # apply changes
 ```
 
 Input file format (sections `## Items`, `## Modules`, `## Pages`, `## Intake`, plus `## Descriptions`, `## Relations`, `## Comments`, `## Links`, `## Page Contents`, `## Intake Contents`) is documented with a full example in [`examples/README.md`](examples/README.md) and [`examples/example_write.md`](examples/example_write.md). Other flags: `--allow-duplicates`, `--verbose`.
+
+With `api_version: "auto"` in the profile, creates and updates of work items are sent in batches of up to 50 (parents before children) and the report lists per-row results; deletions are still sent one item at a time. When the Plane v2 API is unavailable, writing falls back to v1 automatically.
 
 ### diff
 
@@ -181,7 +186,9 @@ removes the block.
 
 ## Configuration
 
-**Profiles** — `~/.config/plane-sync/profiles.json` (or `$XDG_CONFIG_HOME/plane-sync/profiles.json` if set). Override the directory with `PLANE_SYNC_CONFIG_DIR`. A legacy `profiles.json` next to the tool still works if the config-dir one is absent. Each profile has `workspace`, `project`, `env`, `output`; `env` and `output` must be absolute or start with `~/`.
+**Profiles** — `~/.config/plane-sync/profiles.json` (or `$XDG_CONFIG_HOME/plane-sync/profiles.json` if set). Override the directory with `PLANE_SYNC_CONFIG_DIR`. A legacy `profiles.json` next to the tool still works if the config-dir one is absent. Each profile has `workspace`, `project`, `env`, `output`; `env` and `output` must be absolute or start with `~/`. A profile may also set `api_version`: `"1"` (the default) uses only the Plane v1 API; `"auto"` enables the optional v2 paths (bulk write and `snapshot --since`) and falls back to v1 automatically when the v2 API is unavailable.
+
+**Rate limits** — requests are paced proactively from the `X-RateLimit-Remaining`/`X-RateLimit-Reset` response headers (fewer 429 pauses); each command's summary ends with an `N API requests` line.
 
 **API token** — `PLANE_API_TOKEN`, read from a `.env` file or the environment. The `.env` search order is: current directory upward, then `~/.config/plane-sync/.env`, then the tool's own directory. `--env` overrides the search with an explicit path.
 

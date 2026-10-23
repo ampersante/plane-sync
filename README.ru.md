@@ -110,9 +110,12 @@ plane-sync snapshot --profile my-project --descriptions   # включить о�
 plane-sync snapshot --profile my-project --pages           # выгрузить страницы в <output>.pages.md
 plane-sync snapshot --profile my-project --intake          # включить заявки Intake (очередь триажа)
 plane-sync snapshot -w my-workspace -p <project-uuid> -o ./snapshot.md   # без профиля
+plane-sync snapshot --profile my-project --since snapshot.md   # инкрементальный (нужен api_version: "auto")
 ```
 
 Другие флаги: `--prefix XX` — задать префикс ID задач, `-o` — путь для сохранения, `--env` — свой путь к `.env`.
+
+**Инкрементальные снимки** — `--since <snapshot.md>` перечитывает только то, что изменилось с прошлого снимка. Водяной знак — строка `Listed:` в шапке того файла (время последнего листинга), поэтому снимки старой версии — без строки `Listed:` — требуют одного полного переснимка. Изменённые задачи перезапрашиваются; неизменённые строки переносятся байт-в-байт. Экономия — на списках, деталях и страницах: связи (relations) всегда перезагружаются полностью (Plane не обновляет `updated_at` при создании связи), а контент страниц (`--pages`) перечитывается только для изменённых страниц. Требует `api_version: "auto"` в профиле.
 
 ### fetch
 
@@ -137,6 +140,8 @@ plane-sync write --profile my-project -i my-tasks.md --execute  # примени
 ```
 
 Формат входного файла (секции `## Items`, `## Modules`, `## Pages`, `## Intake`, плюс `## Descriptions`, `## Relations`, `## Comments`, `## Links`, `## Page Contents`, `## Intake Contents`) описан с полным примером в [`examples/README.md`](examples/README.md) и [`examples/example_write.md`](examples/example_write.md). Другие флаги: `--allow-duplicates`, `--verbose`.
+
+При `api_version: "auto"` в профиле создание и обновление work items отправляются пачками до 50 (родители раньше детей), а отчёт содержит построчные результаты; удаления отправляются по-прежнему поштучно. Если v2 API недоступен, запись автоматически падает обратно на v1.
 
 ### diff
 
@@ -181,7 +186,9 @@ plane-sync init --remove
 
 ## Конфигурация
 
-**Профили** — `~/.config/plane-sync/profiles.json` (или `$XDG_CONFIG_HOME/plane-sync/profiles.json`, если задан). Каталог можно переопределить через `PLANE_SYNC_CONFIG_DIR`. Если файла в каталоге конфигурации нет, используется legacy `profiles.json` рядом с самим инструментом. У каждого профиля есть `workspace`, `project`, `env`, `output`; `env` и `output` — только абсолютные пути или начинающиеся с `~/`.
+**Профили** — `~/.config/plane-sync/profiles.json` (или `$XDG_CONFIG_HOME/plane-sync/profiles.json`, если задан). Каталог можно переопределить через `PLANE_SYNC_CONFIG_DIR`. Если файла в каталоге конфигурации нет, используется legacy `profiles.json` рядом с самим инструментом. У каждого профиля есть `workspace`, `project`, `env`, `output`; `env` и `output` — только абсолютные пути или начинающиеся с `~/`. Профиль может также задавать `api_version`: `"1"` (по умолчанию) — только Plane API v1; `"auto"` — включает опциональные v2-пути (bulk write и `snapshot --since`) и при недоступности v2 API автоматически откатывается на v1.
+
+**Лимиты запросов** — запросы троттлятся проактивно по заголовкам ответа `X-RateLimit-Remaining`/`X-RateLimit-Reset` (меньше пауз 429); в конце сводки каждой команды выводится строка `N API requests`.
 
 **API-токен** — `PLANE_API_TOKEN`, читается из `.env` или из окружения. Порядок поиска `.env`: текущая папка и выше, затем `~/.config/plane-sync/.env`, затем папка самого инструмента. `--env` задаёт явный путь и отменяет поиск.
 

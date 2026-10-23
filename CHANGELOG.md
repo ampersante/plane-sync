@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `fetch`: comments and links beyond the first page are now followed to the end (they were silently lost after the first page before).
+- Optional Plane v2 layer behind the profile key `api_version: "auto"` (default `"1"` keeps pure v1 behavior):
+  - bulk write — work item creates/updates are sent in waves of up to 50, parents before children, with per-row results in the report; deletions remain one item at a time;
+  - `snapshot --since <snapshot.md>` — incremental re-snapshot by a watermark; unchanged lines are carried over byte-for-byte. The watermark is the `Listed:` line written into the snapshot header (the time of the last listing). Snapshot files without `Listed:` (before this version) need one full re-snapshot first;
+  - automatic fallback to v1 whenever the v2 API is unavailable.
+
+### Changed
+
+- API requests are paced proactively from the `X-RateLimit-Remaining`/`X-RateLimit-Reset` response headers, cutting time spent in 429 pauses; every command's summary now ends with an `N API requests` line.
+
 ## [0.1.0] - 2026-09-27
 
 ### Added
