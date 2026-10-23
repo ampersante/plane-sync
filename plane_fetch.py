@@ -229,13 +229,13 @@ def fetch_work_item(uuid: str, items: list, opts: dict) -> dict:
 
     if not opts.get("no_comments"):
         print(f"Fetching comments...", file=sys.stderr)
-        data["comments"] = api_get_list(f"work-items/{uuid}/comments/",
-                                        critical=False)
+        data["comments"] = api_get_paginated(f"work-items/{uuid}/comments/",
+                                             critical=False)
 
     if not opts.get("no_links"):
         print(f"Fetching links...", file=sys.stderr)
-        data["links"] = api_get_list(f"work-items/{uuid}/links/",
-                                     critical=False)
+        data["links"] = api_get_paginated(f"work-items/{uuid}/links/",
+                                          critical=False)
 
     return data
 

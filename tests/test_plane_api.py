@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import sys
 import tempfile
@@ -215,6 +216,77 @@ class RequestCountTests(unittest.TestCase):
         plane_api.api_get("work-items/")
         plane_api.api_get("states/")
         self.assertEqual(plane_api.get_request_count(), 2)
+
+
+class ApiGetPaginatedTests(unittest.TestCase):
+    """CHK-01 / INV-01: api_get_paginated aggregates cursor pages and accepts
+    critical=False (comments/links pages must not abort the fetch)."""
+
+    def setUp(self):
+        self._old_env = dict(os.environ)
+        self._old_urlopen = plane_api.urllib.request.urlopen
+        self._old_base_url = plane_api._base_url
+        os.environ["PLANE_API_TOKEN"] = "test-token"
+        plane_api.set_base_url("w", "p")
+        plane_api.reset_request_count()
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._old_env)
+        plane_api.urllib.request.urlopen = self._old_urlopen
+        plane_api._base_url = self._old_base_url
+        plane_api.reset_request_count()
+
+    def test_two_pages_aggregated_with_cursor_and_noncritical(self):
+        envelopes = [
+            {"results": [{"id": "comment-page-1"}],
+             "next_page_results": True, "next_cursor": "next-page-cursor"},
+            {"results": [{"id": "comment-page-2"}],
+             "next_page_results": False},
+        ]
+        seen_urls = []
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def read(self):
+                return json.dumps(self._payload).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def fake_urlopen(req, timeout=30):
+            seen_urls.append(req.full_url)
+            page = len(seen_urls) - 1
+            if page >= len(envelopes):
+                raise AssertionError(f"unexpected extra request: {req.full_url}")
+            if page == 1:
+                # second call must carry the cursor handed out by page 1
+                self.assertIn("cursor=next-page-cursor", req.full_url)
+            return FakeResponse(envelopes[page])
+
+        plane_api.urllib.request.urlopen = fake_urlopen
+        results = plane_api.api_get_paginated("comments-x/", critical=False)
+        self.assertEqual([r["id"] for r in results],
+                         ["comment-page-1", "comment-page-2"])
+        self.assertEqual(len(seen_urls), 2)
+        self.assertNotIn("cursor=", seen_urls[0])
+
+
+class FetchCommentsLinksPaginationTests(unittest.TestCase):
+    """CHK-01 red-gate: plane_fetch must read comments/links through
+    api_get_paginated (all pages), not api_get_list (first page only)."""
+
+    def test_fetch_uses_paginated_for_comments_and_links(self):
+        import plane_fetch
+
+        source = Path(plane_fetch.__file__).read_text(encoding="utf-8")
+        self.assertNotIn('api_get_list(f"work-items/{uuid}/comments/"', source)
+        self.assertNotIn('api_get_list(f"work-items/{uuid}/links/"', source)
 
 
 if __name__ == "__main__":

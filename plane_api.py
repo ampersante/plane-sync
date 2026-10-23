@@ -244,7 +244,7 @@ def api_get_list(path: str, **kwargs) -> list:
     return []
 
 
-def api_get_paginated(path: str) -> list:
+def api_get_paginated(path: str, *, critical: bool = True) -> list:
     """GET a paginated endpoint, following cursor until exhausted."""
     all_results = []
     params = {"per_page": "100"}
@@ -252,7 +252,7 @@ def api_get_paginated(path: str) -> list:
 
     while True:
         print(f"  Fetching {path} (page {page})...", file=sys.stderr)
-        data = api_get(path, params=params)
+        data = api_get(path, params=params, critical=critical)
 
         results = data.get("results", data.get("result", []))
         if isinstance(results, list):
