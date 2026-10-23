@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-10-24
+
+### Changed
+
+- Agent contract (`docs/agent-contract.md`, delivered into projects by `plane-sync init`): the freshness step now prefers the incremental `--since` refresh (with its preconditions), explains the `Listed:`/`Generated:` header timestamps, adds a write-input cheat sheet (create `NEW-N` rows, update/delete via `Action` + `ID`; empty cells keep the current value), and mentions `diff` for "what changed" questions. Re-run `plane-sync init <profile>` in working projects to refresh the copied contract.
+
 ## [0.2.0] - 2026-10-24
 
 ### Added
