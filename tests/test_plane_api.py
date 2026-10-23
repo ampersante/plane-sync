@@ -178,5 +178,44 @@ class ListProfilesTests(unittest.TestCase):
             self.assertIn("alpha", buf.getvalue())
 
 
+class RequestCountTests(unittest.TestCase):
+    """Counts requests via a monkeypatched urlopen (empty body -> {} result),
+    so api_get runs without network access."""
+
+    def setUp(self):
+        self._old_env = dict(os.environ)
+        self._old_urlopen = plane_api.urllib.request.urlopen
+        self._old_base_url = plane_api._base_url
+        os.environ["PLANE_API_TOKEN"] = "test-token"
+        plane_api.set_base_url("w", "p")
+        plane_api.reset_request_count()
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._old_env)
+        plane_api.urllib.request.urlopen = self._old_urlopen
+        plane_api._base_url = self._old_base_url
+        plane_api.reset_request_count()
+
+    def test_two_api_gets_counted(self):
+        class FakeResponse:
+            def read(self):
+                return b""
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def fake_urlopen(req, timeout=30):
+            return FakeResponse()
+
+        plane_api.urllib.request.urlopen = fake_urlopen
+        plane_api.api_get("work-items/")
+        plane_api.api_get("states/")
+        self.assertEqual(plane_api.get_request_count(), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

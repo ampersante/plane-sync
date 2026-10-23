@@ -12,6 +12,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -25,6 +26,8 @@ __version__ = "0.1.0"
 
 _warnings: list[str] = []
 _base_url: str = ""
+_request_count = 0
+_count_lock = threading.Lock()
 
 
 def get_warnings() -> list[str]:
@@ -46,6 +49,19 @@ def set_base_url(workspace: str, project: str) -> None:
 def get_base_url() -> str:
     """Return current base URL."""
     return _base_url
+
+
+def get_request_count() -> int:
+    """Return the number of HTTP requests attempted since the last reset."""
+    with _count_lock:
+        return _request_count
+
+
+def reset_request_count() -> None:
+    """Reset the request counter to zero (for tests)."""
+    global _request_count
+    with _count_lock:
+        _request_count = 0
 
 
 # ── Config dir ───────────────────────────────────────────────────────────────
@@ -156,10 +172,14 @@ def _request_with_retry(req: urllib.request.Request, path: str, *,
     dropped (which would silently lose data, e.g. relations). A safety cap on
     consecutive 429s guards against a pathological never-ending loop.
     """
+    global _request_count
     last_error = None
     attempt = 0          # counts only genuine errors, not 429 throttling
     rate_limited = 0     # consecutive 429s, capped to avoid an infinite loop
     while attempt <= max_retries:
+        # every urlopen attempt is a request — retries and 429-waits included
+        with _count_lock:
+            _request_count += 1
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 body = resp.read().decode()

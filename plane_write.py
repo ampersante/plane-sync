@@ -23,7 +23,7 @@ from pathlib import Path
 from plane_api import (
     load_dotenv, set_base_url, api_get, api_get_list, api_get_paginated,
     api_post, api_patch, api_delete, load_profile, detect_prefix,
-    validate_profile_paths, list_profiles,
+    validate_profile_paths, list_profiles, get_request_count,
 )
 from plane_md import INTAKE_STATUS_VALUE, format_item_id, split_md_table_row, unesc_md_cell
 
@@ -1836,10 +1836,12 @@ Input sections: ## Items, ## Modules, ## Pages, ## Intake (+ ## Descriptions,
         if deletes: parts.append(f"{deletes} items deleted")
         print(f"\nDry run complete. Would be: {', '.join(parts) or 'nothing'}.", file=sys.stderr)
         print("Add --execute to apply these changes.", file=sys.stderr)
+        print(f"{get_request_count()} API requests", file=sys.stderr)
         return
 
     # Execute (modules → pages → intake → items)
     execute(resolved, resolved_modules, resolved_pages, resolved_intake, args.verbose)
+    print(f"{get_request_count()} API requests", file=sys.stderr)
 
 
 if __name__ == "__main__":

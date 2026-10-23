@@ -26,6 +26,7 @@ from plane_api import (
     load_dotenv, get_warnings, set_base_url,
     api_get, api_get_list, api_get_paginated, load_profile,
     html_to_text, detect_prefix, validate_profile_paths, list_profiles,
+    get_request_count,
 )
 from plane_md import INTAKE_STATUS, STATE_GROUP_COLS, count_by_state_group, esc_md_cell, format_item_id
 
@@ -605,6 +606,7 @@ def main():
         parts.append(f"{len(data['intake'])} intake")
     parts.append(f"{len(warnings)} warnings")
     print(f"  {', '.join(parts)}", file=sys.stderr)
+    print(f"{get_request_count()} API requests", file=sys.stderr)
 
 
 if __name__ == "__main__":
