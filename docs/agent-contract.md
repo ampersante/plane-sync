@@ -31,7 +31,10 @@ into each working project, so agents in any folder get the same rules.
    Intake is a separate triage queue, not work items.
 3. Ensure a fresh snapshot:
    - No snapshot → `plane-sync snapshot --profile X --pages`
-   - Older than 12 hours (check the `Generated:` line in the snapshot header) → re-run it
+   - Older than 12 hours (check the `Generated:` line in the snapshot header) → refresh:
+     `plane-sync snapshot --profile X --since snapshot.md` (incremental; needs
+     `api_version: "auto"` in the profile). If the profile keeps v1-only or the
+     snapshot predates `Listed:` support, run a full snapshot instead.
    - Fresh → use as is
    - `--pages` writes pages to a separate `<output>.pages.md`, not the main snapshot.
 4. Search the snapshot. Work items and modules live in the main `snapshot.md`;
@@ -39,6 +42,8 @@ into each working project, so agents in any folder get the same rules.
    may be "Core Gameplay Design Document".
 5. For details (descriptions, comments, links) use `plane-sync fetch` with the exact
    name or id found in the snapshot.
+6. "What changed since the previous snapshot" → `plane-sync diff old.md new.md`
+   (offline, compares work items; add `--json` for machine-readable output).
 
 ## Write safety
 
@@ -47,7 +52,21 @@ into each working project, so agents in any folder get the same rules.
   user confirmation.
 - Never run `--execute` unprompted.
 
+## Write input cheat sheet
+
+- Create: `## Items` table with `Ref` = `NEW-1`, `NEW-2`… and columns
+  `Ref | Name | State | Priority | Labels | Assignees | Parent | Module`.
+  Optional sections keyed by the same refs: `## Relations`
+  (`Source | Type | Target`, e.g. `blocked_by`), `## Descriptions`, `## Comments`.
+- Update/delete: same table, but with `Action` (`update`/`delete`) and `ID`
+  (existing item id, e.g. `PRJ-401`) columns instead of `Ref`. Empty cells keep
+  the current value.
+- Full examples: `examples/example_write.md` (create) and
+  `examples/test_write.md` (update/delete) in the plane-sync repository.
+
 ## Freshness and paths
 
-- Check snapshot age via the `Generated:` line in its header, not file mtime.
+- The snapshot header carries two timestamps: `Listed:` — when the item listing
+  was fetched (the watermark `--since` uses), `Generated:` — when rendering
+  finished. Judge snapshot age by `Generated:`, not file mtime.
 - Quote all paths that may contain spaces.
