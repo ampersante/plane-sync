@@ -29,6 +29,11 @@ _base_url: str = ""
 _request_count = 0
 _count_lock = threading.Lock()
 
+# Last observed rate-limit signal from X-RateLimit-Remaining (int) and
+# X-RateLimit-Reset (UTC epoch seconds); None = header absent or unparsable.
+_rl = {"remaining": None, "reset_epoch": None}
+_rl_lock = threading.Lock()
+
 
 def get_warnings() -> list[str]:
     """Return accumulated warnings."""
@@ -163,9 +168,59 @@ def _headers() -> dict:
 
 # ── HTTP methods ────────────────────────────────────────────────────────────
 
+def _update_rate_limit(headers) -> None:
+    """Record X-RateLimit-Remaining/-Reset from any response (success or error).
+
+    A missing or unparsable header clears its field to None — an absent signal
+    must never be read as an empty quota. Header lookup is case-insensitive
+    (http.client.HTTPMessage).
+    """
+    remaining = reset_epoch = None
+    if headers is not None:
+        raw_remaining = headers.get("X-RateLimit-Remaining")
+        raw_reset = headers.get("X-RateLimit-Reset")
+        if raw_remaining is not None:
+            try:
+                remaining = int(raw_remaining)
+            except ValueError:
+                remaining = None
+        if raw_reset is not None:
+            try:
+                reset_epoch = float(raw_reset)
+            except ValueError:
+                reset_epoch = None
+    with _rl_lock:
+        _rl["remaining"] = remaining
+        _rl["reset_epoch"] = reset_epoch
+
+
+def _sleep_if_window_exhausted() -> None:
+    """Proactively wait out the rate-limit window before sending a request.
+
+    Best-effort: driven by the last observed X-RateLimit headers, one sleep per
+    attempt with no re-check afterwards — the 429/Retry-After path stays the
+    authority. The sleep runs outside the lock so other workers aren't blocked.
+    """
+    with _rl_lock:
+        remaining = _rl["remaining"]
+        reset_epoch = _rl["reset_epoch"]
+    if remaining is None or remaining > 0 or reset_epoch is None:
+        return
+    delta = reset_epoch - time.time()
+    if delta <= 0:
+        return
+    sleep_for = min(delta + 0.5, 65)  # limit window is 60s; 65 leaves margin
+    print(f"  Rate limit window exhausted, sleeping {sleep_for:.1f}s...", file=sys.stderr)
+    time.sleep(sleep_for)
+
+
 def _request_with_retry(req: urllib.request.Request, path: str, *,
                         max_retries: int = 3, critical: bool = True) -> dict:
     """Execute a request with retry, backoff, and rate limit handling.
+
+    Before each send, the last observed X-RateLimit headers may trigger a
+    proactive wait for the window to reset (best-effort throttle, see
+    _sleep_if_window_exhausted).
 
     429 (rate limited) waits out Retry-After and retries WITHOUT consuming the
     retry budget — rate limiting is transient and must not cause a request to be
@@ -177,16 +232,19 @@ def _request_with_retry(req: urllib.request.Request, path: str, *,
     attempt = 0          # counts only genuine errors, not 429 throttling
     rate_limited = 0     # consecutive 429s, capped to avoid an infinite loop
     while attempt <= max_retries:
+        _sleep_if_window_exhausted()
         # every urlopen attempt is a request — retries and 429-waits included
         with _count_lock:
             _request_count += 1
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
+                _update_rate_limit(resp.headers)
                 body = resp.read().decode()
                 if not body:
                     return {}  # e.g. 204 No Content from DELETE
                 return json.loads(body)
         except urllib.error.HTTPError as e:
+            _update_rate_limit(e.headers)
             if e.code in (401, 403):
                 print(f"Error: Authentication failed (HTTP {e.code}).", file=sys.stderr)
                 print("Check your PLANE_API_TOKEN. Get one at: Plane → Settings → API Tokens", file=sys.stderr)

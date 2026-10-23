@@ -1,9 +1,12 @@
+import http.client
 import io
 import json
 import os
 import sys
 import tempfile
+import time
 import unittest
+import urllib.error
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -200,6 +203,8 @@ class RequestCountTests(unittest.TestCase):
 
     def test_two_api_gets_counted(self):
         class FakeResponse:
+            headers = http.client.HTTPMessage()  # real responses always carry headers
+
             def read(self):
                 return b""
 
@@ -247,6 +252,8 @@ class ApiGetPaginatedTests(unittest.TestCase):
         seen_urls = []
 
         class FakeResponse:
+            headers = http.client.HTTPMessage()  # real responses always carry headers
+
             def __init__(self, payload):
                 self._payload = payload
 
@@ -275,6 +282,137 @@ class ApiGetPaginatedTests(unittest.TestCase):
                          ["comment-page-1", "comment-page-2"])
         self.assertEqual(len(seen_urls), 2)
         self.assertNotIn("cursor=", seen_urls[0])
+
+
+class _HeaderResponse:
+    """Empty-body (or fixed-payload) response with given headers — urlopen double."""
+
+    def __init__(self, headers, payload=b""):
+        self.headers = headers
+        self._payload = payload
+
+    def read(self):
+        return self._payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class RateLimitThrottleTests(unittest.TestCase):
+    """CHK-02 / INV-02: proactive throttle from X-RateLimit headers fires
+    before the 429 path; absent headers keep the old behavior."""
+
+    def setUp(self):
+        self._old_env = dict(os.environ)
+        self._old_urlopen = plane_api.urllib.request.urlopen
+        self._old_sleep = plane_api.time.sleep
+        self._old_base_url = plane_api._base_url
+        os.environ["PLANE_API_TOKEN"] = "test-token"
+        plane_api.set_base_url("w", "p")
+        plane_api.reset_request_count()
+        self._reset_rl()
+        self.sleeps = []
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._old_env)
+        plane_api.urllib.request.urlopen = self._old_urlopen
+        plane_api.time.sleep = self._old_sleep
+        plane_api._base_url = self._old_base_url
+        plane_api.reset_request_count()
+        self._reset_rl()
+
+    @staticmethod
+    def _reset_rl():
+        with plane_api._rl_lock:
+            plane_api._rl["remaining"] = None
+            plane_api._rl["reset_epoch"] = None
+
+    @staticmethod
+    def _rl_headers(remaining=None, reset=None):
+        msg = http.client.HTTPMessage()
+        if remaining is not None:
+            msg["X-RateLimit-Remaining"] = str(remaining)
+        if reset is not None:
+            msg["X-RateLimit-Reset"] = str(reset)
+        return msg
+
+    def test_remaining_zero_sleeps_once_in_band(self):
+        calls = []
+
+        def fake_urlopen(req, timeout=30):
+            calls.append(req.full_url)
+            return _HeaderResponse(self._rl_headers(remaining=0, reset=time.time() + 2))
+
+        plane_api.urllib.request.urlopen = fake_urlopen
+        plane_api.time.sleep = self.sleeps.append
+
+        plane_api.api_get("states/")
+        plane_api.api_get("states/")
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(self.sleeps), 1)
+        self.assertGreaterEqual(self.sleeps[0], 2.0)
+        self.assertLessEqual(self.sleeps[0], 3.0)
+
+    def test_remaining_positive_no_sleep(self):
+        def fake_urlopen(req, timeout=30):
+            return _HeaderResponse(self._rl_headers(remaining=5, reset=time.time() + 2))
+
+        plane_api.urllib.request.urlopen = fake_urlopen
+        plane_api.time.sleep = self.sleeps.append
+
+        plane_api.api_get("states/")
+        plane_api.api_get("states/")
+
+        self.assertEqual(self.sleeps, [])
+
+    def test_no_rate_limit_headers_no_sleep(self):
+        def fake_urlopen(req, timeout=30):
+            return _HeaderResponse(self._rl_headers())
+
+        plane_api.urllib.request.urlopen = fake_urlopen
+        plane_api.time.sleep = self.sleeps.append
+
+        plane_api.api_get("states/")
+        plane_api.api_get("states/")
+
+        self.assertEqual(self.sleeps, [])
+
+    def test_sleep_capped_at_65_seconds(self):
+        def fake_urlopen(req, timeout=30):
+            return _HeaderResponse(self._rl_headers(remaining=0, reset=time.time() + 120))
+
+        plane_api.urllib.request.urlopen = fake_urlopen
+        plane_api.time.sleep = self.sleeps.append
+
+        plane_api.api_get("states/")
+        plane_api.api_get("states/")
+
+        self.assertEqual(self.sleeps, [65])
+
+    def test_429_retry_after_path_unchanged(self):
+        calls = []
+
+        def fake_urlopen(req, timeout=30):
+            calls.append(req.full_url)
+            if len(calls) == 1:
+                hdrs = http.client.HTTPMessage()
+                hdrs["Retry-After"] = "1"
+                raise urllib.error.HTTPError(req.full_url, 429, "Too Many Requests", hdrs, None)
+            return _HeaderResponse(self._rl_headers(), payload=b'{"ok": true}')
+
+        plane_api.urllib.request.urlopen = fake_urlopen
+        plane_api.time.sleep = self.sleeps.append
+
+        result = plane_api.api_get("states/")
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(self.sleeps, [1])
 
 
 class FetchCommentsLinksPaginationTests(unittest.TestCase):
