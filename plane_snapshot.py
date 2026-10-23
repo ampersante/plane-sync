@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from plane_api import (
-    load_dotenv, get_warnings, set_base_url,
+    load_dotenv, get_warnings, set_api_version, set_base_url,
     api_get, api_get_list, api_get_paginated, load_profile,
     html_to_text, detect_prefix, validate_profile_paths, list_profiles,
     get_request_count,
@@ -533,6 +533,7 @@ def main():
         if not args.env and "env" in profile:
             args.env = Path(os.path.expanduser(profile["env"]))
         validate_profile_paths(profile, require_output=True)
+        set_api_version(profile.get("api_version", "1"))
 
     # Defaults for values still not set
     if not args.output:

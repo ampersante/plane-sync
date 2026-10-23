@@ -3,7 +3,8 @@
     "workspace": "my-workspace-slug",
     "project": "00000000-0000-0000-0000-000000000000",
     "env": "~/project-a/.env",
-    "output": "~/project-a/snapshot.md"
+    "output": "~/project-a/snapshot.md",
+    "api_version": "auto"
   },
   "another-project": {
     "workspace": "my-workspace-slug",

@@ -26,6 +26,10 @@ __version__ = "0.1.0"
 
 _warnings: list[str] = []
 _base_url: str = ""
+_workspace: str = ""
+_project: str = ""
+_api_version: str = "1"
+_v2_available: bool | None = None  # None = v2 probe not yet run
 _request_count = 0
 _count_lock = threading.Lock()
 
@@ -46,14 +50,21 @@ def clear_warnings() -> None:
 
 
 def set_base_url(workspace: str, project: str) -> None:
-    """Set the module-level base URL for all API calls."""
-    global _base_url
+    """Set the module-level base URLs (v1 and v2) for all API calls."""
+    global _base_url, _workspace, _project
+    _workspace = workspace
+    _project = project
     _base_url = f"https://api.plane.so/api/v1/workspaces/{workspace}/projects/{project}"
 
 
 def get_base_url() -> str:
     """Return current base URL."""
     return _base_url
+
+
+def v2_base_url() -> str:
+    """Return the v2 base URL for the current workspace/project."""
+    return f"https://api.plane.so/api/v2/workspaces/{_workspace}/projects/{_project}"
 
 
 def get_request_count() -> int:
@@ -214,13 +225,35 @@ def _sleep_if_window_exhausted() -> None:
     time.sleep(sleep_for)
 
 
+def _problem_json_fields(e: urllib.error.HTTPError) -> tuple[str, str] | None:
+    """Extract (code, detail) from an RFC 9457 problem+json error body.
+
+    Returns None when the body is absent, unreadable, or not a JSON object
+    carrying at least one of the code/detail fields — the caller then falls
+    back to the generic error path.
+    """
+    try:
+        payload = json.loads(e.read().decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict) or ("code" not in payload and "detail" not in payload):
+        return None
+    return str(payload.get("code", "")), str(payload.get("detail", ""))
+
+
 def _request_with_retry(req: urllib.request.Request, path: str, *,
-                        max_retries: int = 3, critical: bool = True) -> dict:
+                        max_retries: int = 3, critical: bool = True,
+                        problem_json: bool = False) -> dict:
     """Execute a request with retry, backoff, and rate limit handling.
 
     Before each send, the last observed X-RateLimit headers may trigger a
     proactive wait for the window to reset (best-effort throttle, see
     _sleep_if_window_exhausted).
+
+    With problem_json=True (v2 reads), a 4xx whose body is an RFC 9457
+    problem+json object is a definitive answer: no retry, one warning with the
+    server's code/detail, empty dict return. Other failures keep the shared
+    retry/warning path.
 
     429 (rate limited) waits out Retry-After and retries WITHOUT consuming the
     retry budget — rate limiting is transient and must not cause a request to be
@@ -260,6 +293,12 @@ def _request_with_retry(req: urllib.request.Request, path: str, *,
                 continue  # don't count as a retry attempt
             if e.code == 404 and not critical:
                 return {}
+            if problem_json and 400 <= e.code < 500:
+                fields = _problem_json_fields(e)
+                if fields is not None:
+                    code, detail = fields
+                    _warnings.append(f"Failed {path}: {e} (code={code}, detail={detail})")
+                    return {}
             last_error = e
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             last_error = e
@@ -361,6 +400,75 @@ def detect_prefix(*, default: str = "??") -> str:
         return project.get("identifier", default)
     except Exception:
         return default
+
+
+# ── API version mode and v2 layer ───────────────────────────────────────────
+
+def set_api_version(version: str) -> None:
+    """Set the API version mode: "1" (default, v1 only) or "auto".
+
+    Read from the profile's optional `api_version` key; no schema validation —
+    any value other than "auto" behaves as v1.
+    """
+    global _api_version
+    _api_version = version
+
+
+def get_api_version() -> str:
+    """Return the current API version mode."""
+    return _api_version
+
+
+def v2_available() -> bool:
+    """Probe the v2 API once per run and cache the verdict.
+
+    GET /api/v2/users/me/ is the cheapest authenticated v2 endpoint; a 404
+    (self-hosted CE) or unreachable API yields False without aborting the run.
+    The verdict is cached because it cannot change mid-run; reset_v2_cache()
+    exists for tests. The cache is a plain module value: a concurrent first
+    call could duplicate the probe, which is benign (idempotent GET, same
+    verdict stored).
+    """
+    global _v2_available
+    if _v2_available is not None:
+        return _v2_available
+    req = urllib.request.Request("https://api.plane.so/api/v2/users/me/",
+                                 headers=_headers())
+    data = _request_with_retry(req, "api/v2/users/me/", critical=False)
+    _v2_available = bool(data)
+    return _v2_available
+
+
+def reset_v2_cache() -> None:
+    """Forget the cached v2 probe verdict (for tests)."""
+    global _v2_available
+    _v2_available = None
+
+
+def v2_enabled() -> bool:
+    """True only when the mode is "auto" AND the probe confirmed v2.
+
+    Mode "1" short-circuits before any network call: zero v2 requests,
+    the probe included.
+    """
+    return get_api_version() == "auto" and v2_available()
+
+
+def api_v2_get(path: str, *, params: dict | None = None) -> dict:
+    """GET on the v2 base URL; returns the full v2 envelope.
+
+    The v2 envelope carries rows under `data` with cursor fields
+    `next_cursor`/`has_more` (v1 uses `results`/`next_page_results`). Reads are
+    non-critical: an RFC 9457 problem+json 4xx body is reduced to one warning
+    carrying the server's code/detail and an empty dict; every other failure
+    follows the shared retry-and-warn path.
+    """
+    url = f"{v2_base_url()}/{path.lstrip('/')}"
+    if params:
+        url += "?" + urllib.parse.urlencode(params)
+
+    req = urllib.request.Request(url, headers=_headers())
+    return _request_with_retry(req, path, critical=False, problem_json=True)
 
 
 # ── Profile loader ──────────────────────────────────────────────────────────

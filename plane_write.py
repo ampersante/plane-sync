@@ -21,9 +21,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from plane_api import (
-    load_dotenv, set_base_url, api_get, api_get_list, api_get_paginated,
-    api_post, api_patch, api_delete, load_profile, detect_prefix,
-    validate_profile_paths, list_profiles, get_request_count,
+    load_dotenv, set_base_url, set_api_version, api_get, api_get_list,
+    api_get_paginated, api_post, api_patch, api_delete, load_profile,
+    detect_prefix, validate_profile_paths, list_profiles, get_request_count,
 )
 from plane_md import INTAKE_STATUS_VALUE, format_item_id, split_md_table_row, unesc_md_cell
 
@@ -1703,6 +1703,7 @@ Input sections: ## Items, ## Modules, ## Pages, ## Intake (+ ## Descriptions,
         if not args.env and "env" in profile:
             args.env = Path(os.path.expanduser(profile["env"]))
         validate_profile_paths(profile, require_output=False)
+        set_api_version(profile.get("api_version", "1"))
 
     # Validate required args
     if not args.workspace or not args.project:

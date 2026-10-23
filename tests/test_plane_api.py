@@ -427,5 +427,120 @@ class FetchCommentsLinksPaginationTests(unittest.TestCase):
         self.assertNotIn('api_get_list(f"work-items/{uuid}/links/"', source)
 
 
+class V2TransportTests(unittest.TestCase):
+    """CHK-03 / INV-04: the v2 layer is mode-gated ("1" — zero v2 requests,
+    probe included), the probe is cached per run, api_v2_get parses the v2
+    envelope, and RFC 9457 problem+json errors land in warnings with their
+    code. All network goes through a monkeypatched urlopen."""
+
+    def setUp(self):
+        self._old_env = dict(os.environ)
+        self._old_urlopen = plane_api.urllib.request.urlopen
+        self._old_base_url = plane_api._base_url
+        self._old_api_version = plane_api.get_api_version()
+        os.environ["PLANE_API_TOKEN"] = "test-token"
+        plane_api.set_base_url("w", "p")
+        plane_api.reset_request_count()
+        plane_api.reset_v2_cache()
+        plane_api.clear_warnings()
+        self.calls = []
+        self._http_error = None  # closed in tearDown to avoid ResourceWarning
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._old_env)
+        plane_api.urllib.request.urlopen = self._old_urlopen
+        plane_api._base_url = self._old_base_url
+        plane_api.set_api_version(self._old_api_version)
+        plane_api.reset_v2_cache()
+        plane_api.reset_request_count()
+        if self._http_error is not None:
+            self._http_error.close()
+
+    @staticmethod
+    def _response(payload):
+        return _HeaderResponse(http.client.HTTPMessage(),
+                               payload=json.dumps(payload).encode())
+
+    def _spy(self, respond):
+        def fake_urlopen(req, timeout=30):
+            self.calls.append(req.full_url)
+            return respond(req)
+        plane_api.urllib.request.urlopen = fake_urlopen
+
+    def test_v1_mode_never_probes(self):
+        # Neither the "1" default (no set_api_version call) nor an explicit
+        # "1" may trigger any v2 request, the probe included.
+        def boom(req, timeout=30):
+            raise AssertionError(f"unexpected v2 request: {req.full_url}")
+        plane_api.urllib.request.urlopen = boom
+        self.assertFalse(plane_api.v2_enabled())
+        plane_api.set_api_version("1")
+        self.assertFalse(plane_api.v2_enabled())
+
+    def test_auto_probe_404_unavailable(self):
+        plane_api.set_api_version("auto")
+        hdrs = http.client.HTTPMessage()
+        self._http_error = urllib.error.HTTPError(
+            "https://api.plane.so/api/v2/users/me/", 404, "Not Found", hdrs, None)
+
+        def fake_urlopen(req, timeout=30):
+            self.calls.append(req.full_url)
+            raise self._http_error
+
+        plane_api.urllib.request.urlopen = fake_urlopen
+        self.assertFalse(plane_api.v2_available())
+        self.assertFalse(plane_api.v2_enabled())
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.calls[0], "https://api.plane.so/api/v2/users/me/")
+        self.assertEqual(plane_api.get_warnings(), [])  # 404 stays silent
+
+    def test_auto_probe_200_cached(self):
+        plane_api.set_api_version("auto")
+        self._spy(lambda req: self._response({"id": "u1", "email": "x@y.z"}))
+
+        self.assertTrue(plane_api.v2_enabled())
+        self.assertTrue(plane_api.v2_available())
+        self.assertTrue(plane_api.v2_enabled())
+        self.assertEqual(len(self.calls), 1)  # cached: no second probe request
+        self.assertEqual(self.calls[0], "https://api.plane.so/api/v2/users/me/")
+
+    def test_api_v2_get_parses_envelope(self):
+        envelope = {"data": [{"id": "i1"}, {"id": "i2"}],
+                    "next_cursor": "c", "has_more": True}
+        self._spy(lambda req: self._response(envelope))
+
+        result = plane_api.api_v2_get("work-items/", params={"paginate": "cursor"})
+
+        self.assertEqual(result, envelope)
+        self.assertTrue(result["has_more"])
+        self.assertEqual(self.calls, [
+            "https://api.plane.so/api/v2/workspaces/w/projects/p/work-items/?paginate=cursor"
+        ])
+
+    def test_api_v2_get_problem_json_warns_with_code(self):
+        hdrs = http.client.HTTPMessage()
+        hdrs["Content-Type"] = "application/problem+json"
+        body = json.dumps({"code": "validation_error", "detail": "bad"}).encode()
+        self._http_error = urllib.error.HTTPError(
+            "https://api.plane.so/api/v2/workspaces/w/projects/p/work-items/",
+            400, "Bad Request", hdrs, io.BytesIO(body))
+
+        def fake_urlopen(req, timeout=30):
+            self.calls.append(req.full_url)
+            raise self._http_error
+
+        plane_api.urllib.request.urlopen = fake_urlopen
+        result = plane_api.api_v2_get("work-items/")
+
+        self.assertEqual(result, {})
+        warnings = plane_api.get_warnings()
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("Failed work-items/", warnings[0])
+        self.assertIn("validation_error", warnings[0])
+        self.assertIn("bad", warnings[0])
+        self.assertEqual(len(self.calls), 1)  # definitive 4xx: no retry
+
+
 if __name__ == "__main__":
     unittest.main()
