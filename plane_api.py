@@ -471,6 +471,21 @@ def api_v2_get(path: str, *, params: dict | None = None) -> dict:
     return _request_with_retry(req, path, critical=False, problem_json=True)
 
 
+def api_v2_post(path: str, body: dict) -> dict:
+    """POST on the v2 base URL (bulk mutations: bulk-create, bulk-update).
+
+    Non-critical like every write mutation in this tool: an RFC 9457
+    problem+json 4xx body is reduced to one warning carrying the server's
+    code/detail and an empty dict; every other failure follows the shared
+    retry-and-warn path.
+    """
+    url = f"{v2_base_url()}/{path.lstrip('/')}"
+    data = json.dumps(body).encode()
+
+    req = urllib.request.Request(url, data=data, headers=_headers(), method="POST")
+    return _request_with_retry(req, path, critical=False, problem_json=True)
+
+
 # ── Profile loader ──────────────────────────────────────────────────────────
 
 def load_profile(name: str) -> dict:

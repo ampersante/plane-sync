@@ -24,6 +24,7 @@ from plane_api import (
     load_dotenv, set_base_url, set_api_version, api_get, api_get_list,
     api_get_paginated, api_post, api_patch, api_delete, load_profile,
     detect_prefix, validate_profile_paths, list_profiles, get_request_count,
+    api_v2_post, v2_enabled,
 )
 from plane_md import INTAKE_STATUS_VALUE, format_item_id, split_md_table_row, unesc_md_cell
 
@@ -1295,6 +1296,282 @@ def topological_sort_pages(resolved: list[ResolvedPage]) -> list[ResolvedPage]:
     return order
 
 
+# ── Bulk write (v2, opt-in) ─────────────────────────────────────────────────
+
+BULK_CHUNK_SIZE = 50
+
+# Resolved v1-style bodies carry UUID fields as state/labels/assignees/parent;
+# v2 write rows name them state_id/label_ids/assignee_ids/parent_id (live
+# probe 2026-10-24: state_id accepted; docs: "same body as Create a work
+# item"). name/priority/description_html are shared.
+_V2_ROW_FIELDS = {
+    "state": "state_id",
+    "labels": "label_ids",
+    "assignees": "assignee_ids",
+    "parent": "parent_id",
+}
+
+
+def _v2_bulk_row(body: dict, *, item_id: str | None = None) -> dict:
+    """Translate a resolved v1-style body into a v2 bulk write row."""
+    row = {"id": item_id} if item_id is not None else {}
+    for key, value in body.items():
+        row[_V2_ROW_FIELDS.get(key, key)] = value
+    return row
+
+
+def _group_waves(ordered: list[ResolvedItem]) -> list[list[ResolvedItem]]:
+    """Group topologically ordered creates into waves by parent depth.
+
+    Wave N holds items whose longest NEW-parent chain has N links, so every
+    parent's UUID is known (its wave already returned) before any child row
+    is sent.
+    """
+    depth: dict[str, int] = {}  # ref (upper) → wave index
+    waves: list[list[ResolvedItem]] = []
+    for item in ordered:
+        ref = item.spec.ref.upper()
+        parent_ref = item.spec.parent_ref.upper() if item.spec.parent_ref else ""
+        wave = depth.get(parent_ref, -1) + 1 if parent_ref in depth else 0
+        depth[ref] = wave
+        while len(waves) <= wave:
+            waves.append([])
+        waves[wave].append(item)
+    return waves
+
+
+def _chunked(items: list, size: int) -> list[list]:
+    return [items[i:i + size] for i in range(0, len(items), size)]
+
+
+def _parse_bulk_results(resp: dict,
+                        row_count: int) -> list[tuple[str | None, int | None, str | None]] | None:
+    """Correlate a v2 bulk envelope with the input rows (A6).
+
+    Returns one (uuid, sequence_id, error) tuple per input row in request
+    order — the envelope carries results[i].index, so rows map by explicit
+    index, not by position. Returns None when the shape cannot be trusted to
+    correlate (missing/short results, unexpected indexes or result values);
+    callers then treat created/updated rows as unknown and fall back per the
+    A6 branch.
+    """
+    if not isinstance(resp, dict):
+        return None
+    results = resp.get("results")
+    if not isinstance(results, list) or len(results) != row_count:
+        return None
+    parsed: list[tuple[str | None, int | None, str | None] | None] = [None] * row_count
+    for entry in results:
+        if not isinstance(entry, dict):
+            return None
+        index = entry.get("index")
+        if not isinstance(index, int) or not 0 <= index < row_count or parsed[index] is not None:
+            return None
+        result = entry.get("result")
+        if result in ("created", "updated"):
+            uuid = entry.get("id")
+            if not isinstance(uuid, str) or not uuid:
+                return None
+            seq = entry.get("sequence_id")
+            parsed[index] = (uuid, seq if isinstance(seq, int) else None, None)
+        elif result == "failed":
+            parts = []
+            if entry.get("code"):
+                parts.append(f"code={entry['code']}")
+            if entry.get("detail"):
+                parts.append(f"detail={entry['detail']}")
+            for e in entry.get("errors") or []:
+                if isinstance(e, dict) and e.get("message"):
+                    if e.get("field"):
+                        parts.append(f"{e['field']}: {e['message']}")
+                    else:
+                        parts.append(str(e["message"]))
+            parsed[index] = (None, None, "; ".join(parts) or "bulk row failed")
+        else:
+            return None
+    if any(p is None for p in parsed):
+        return None
+    return parsed
+
+
+def _create_item_v1(item: ResolvedItem, temp_to_uuid: dict[str, str], verbose: bool) -> bool:
+    """Create one work item via v1 POST; records the UUID in temp_to_uuid."""
+    parent_ref = item.spec.parent_ref.upper() if item.spec.parent_ref else ""
+    if parent_ref.startswith("NEW-") and parent_ref in temp_to_uuid:
+        item.api_body["parent"] = temp_to_uuid[parent_ref]
+
+    if verbose:
+        print(f"  [POST] work-items/ {item.api_body}", file=sys.stderr)
+
+    result = api_post("work-items/", item.api_body, critical=False)
+    if not result or "id" not in result:
+        print(f"  [FAIL] {item.spec.ref}: {item.spec.name} — {result}", file=sys.stderr)
+        return False
+
+    item.created_id = result["id"]
+    item.created_seq = result.get("sequence_id")
+    temp_to_uuid[item.spec.ref.upper()] = item.created_id
+    print(f"  [OK] {item.spec.ref} → {item.created_seq}: {item.spec.name}", file=sys.stderr)
+    return True
+
+
+def _update_item_v1(item: ResolvedItem, verbose: bool) -> bool:
+    """Update one work item via v1 PATCH."""
+    if verbose:
+        print(f"  [PATCH] work-items/{item.existing_uuid}/ {item.api_body}", file=sys.stderr)
+
+    result = api_patch(f"work-items/{item.existing_uuid}/", item.api_body, critical=False)
+    if result:
+        print(f"  [OK] Updated {item.spec.existing_id}: {', '.join(item.api_body.keys())}",
+              file=sys.stderr)
+        return True
+    print(f"  [FAIL] {item.spec.existing_id} — {result}", file=sys.stderr)
+    return False
+
+
+def _bulk_create_items(ordered: list[ResolvedItem], temp_to_uuid: dict[str, str],
+                       verbose: bool) -> int:
+    """Create work items via v2 bulk: waves by parent depth, chunks of 50.
+
+    Fallback rules (A6 branch):
+    - a row whose parent UUID is still unknown (parent failed, skipped, or
+      lost to an uncorrelated response) goes per-item v1 — it cannot be
+      correlated-addressed in a bulk payload;
+    - a bulk call returning empty (request failed) switches the whole
+      remainder to per-item v1, same as v2 being unavailable;
+    - a 2xx response that cannot be correlated means the rows were created
+      but their UUIDs are unknown: they are reported with a warning (never
+      re-created) and independent rows keep using bulk.
+    """
+    created = 0
+    bulk_usable = True   # a failed bulk call turns the remainder v1
+
+    def create_v1(items: list[ResolvedItem]) -> int:
+        count = 0
+        for item in items:
+            if _create_item_v1(item, temp_to_uuid, verbose):
+                count += 1
+            time.sleep(0.3)
+        return count
+
+    for wave in _group_waves(ordered):
+        for chunk in _chunked(wave, BULK_CHUNK_SIZE):
+            dependent: list[ResolvedItem] = []
+            addressed: list[tuple[ResolvedItem, dict]] = []
+            for item in chunk:
+                parent_ref = item.spec.parent_ref.upper() if item.spec.parent_ref else ""
+                if parent_ref.startswith("NEW-") and parent_ref not in temp_to_uuid:
+                    print(f"  [WARN] {item.spec.ref}: parent {parent_ref} not resolved — "
+                          f"creating without parent link", file=sys.stderr)
+                    dependent.append(item)
+                else:
+                    row = _v2_bulk_row(item.api_body)
+                    if parent_ref in temp_to_uuid:
+                        row["parent_id"] = temp_to_uuid[parent_ref]
+                    addressed.append((item, row))
+
+            if not bulk_usable:
+                created += create_v1(chunk)
+                continue
+
+            if addressed:
+                rows = [row for _, row in addressed]
+                if verbose:
+                    print(f"  [POST] v2 work-items/bulk-create/ ({len(rows)} rows)",
+                          file=sys.stderr)
+                resp = api_v2_post("work-items/bulk-create/", {"items": rows})
+                time.sleep(0.3)
+                if not resp:
+                    print("  [WARN] bulk-create failed — falling back to per-item v1",
+                          file=sys.stderr)
+                    bulk_usable = False
+                    created += create_v1([item for item, _ in addressed])
+                else:
+                    parsed = _parse_bulk_results(resp, len(rows))
+                    if parsed is None:
+                        print(f"  [WARN] bulk-create response not correlated — UUID/sequence "
+                              f"unknown for {len(rows)} rows", file=sys.stderr)
+                        for item, _ in addressed:
+                            print(f"  [OK] {item.spec.ref}: {item.spec.name}", file=sys.stderr)
+                            created += 1
+                    else:
+                        for (item, _), (uuid, seq, err) in zip(addressed, parsed):
+                            if err is not None:
+                                print(f"  [WARN] {item.spec.ref}: {item.spec.name} — "
+                                      f"bulk row failed ({err})", file=sys.stderr)
+                                continue
+                            item.created_id = uuid
+                            item.created_seq = seq
+                            temp_to_uuid[item.spec.ref.upper()] = uuid
+                            seq_part = f" → {seq}" if seq else ""
+                            print(f"  [OK] {item.spec.ref}{seq_part}: {item.spec.name}",
+                                  file=sys.stderr)
+                            created += 1
+
+            created += create_v1(dependent)
+
+    return created
+
+
+def _bulk_update_items(updates: list[ResolvedItem], verbose: bool) -> int:
+    """Update work items via v2 bulk: chunks of 50, POST work-items/bulk-update/.
+
+    A failed bulk call or a 2xx response that cannot be correlated switches
+    the remainder to per-item v1; re-issuing the same PATCH per item is
+    idempotent, so the fallback never double-applies.
+    """
+    updated = 0
+    bulk_usable = True
+
+    def update_v1(items: list[ResolvedItem]) -> int:
+        count = 0
+        for item in items:
+            if _update_item_v1(item, verbose):
+                count += 1
+            time.sleep(0.3)
+        return count
+
+    for chunk in _chunked(updates, BULK_CHUNK_SIZE):
+        addressed = [item for item in chunk if item.existing_uuid]
+        for item in chunk:
+            if not item.existing_uuid:
+                print(f"  [SKIP] {item.spec.existing_id}: UUID not resolved", file=sys.stderr)
+
+        if not bulk_usable:
+            updated += update_v1(addressed)
+            continue
+        if not addressed:
+            continue
+
+        rows = [_v2_bulk_row(item.api_body, item_id=item.existing_uuid) for item in addressed]
+        if verbose:
+            print(f"  [POST] v2 work-items/bulk-update/ ({len(rows)} rows)", file=sys.stderr)
+        resp = api_v2_post("work-items/bulk-update/", {"items": rows})
+        time.sleep(0.3)
+        if not resp:
+            print("  [WARN] bulk-update failed — falling back to per-item v1", file=sys.stderr)
+            bulk_usable = False
+            updated += update_v1(addressed)
+            continue
+        parsed = _parse_bulk_results(resp, len(rows))
+        if parsed is None:
+            print(f"  [WARN] bulk-update response not correlated — re-issuing {len(rows)} "
+                  f"rows per-item v1", file=sys.stderr)
+            bulk_usable = False
+            updated += update_v1(addressed)
+            continue
+        for item, (uuid, _seq, err) in zip(addressed, parsed):
+            if err is not None:
+                print(f"  [WARN] {item.spec.existing_id}: bulk row failed ({err})",
+                      file=sys.stderr)
+                continue
+            updated += 1
+            print(f"  [OK] Updated {item.spec.existing_id}: {', '.join(item.api_body.keys())}",
+                  file=sys.stderr)
+
+    return updated
+
+
 def execute(resolved: list[ResolvedItem],
             resolved_modules: list[ResolvedModule],
             resolved_pages: list[ResolvedPage],
@@ -1464,6 +1741,12 @@ def execute(resolved: list[ResolvedItem],
     updates = [r for r in active if r.spec.action == "update"]
     deletes = [r for r in active if r.spec.action == "delete"]
 
+    # Bulk write gate (create/update only; deletes and every other mutation
+    # stay per-item v1, REQ-08). v2_enabled() probes v2 once per run — but
+    # only when bulk can apply, so delete-only runs and all dry-runs make
+    # zero v2 requests.
+    bulk_active = bool(creates or updates) and v2_enabled()
+
     temp_to_uuid: dict[str, str] = {}  # "NEW-1" → created UUID
     created_count = 0
     updated_count = 0
@@ -1488,47 +1771,28 @@ def execute(resolved: list[ResolvedItem],
     # ── Updates ──────────────────────────────────────────────────────────────
     if updates:
         print(f"\nUpdating {len(updates)} work items...", file=sys.stderr)
-        for item in updates:
-            if not item.existing_uuid:
-                print(f"  [SKIP] {item.spec.existing_id}: UUID not resolved", file=sys.stderr)
-                continue
-
-            if verbose:
-                print(f"  [PATCH] work-items/{item.existing_uuid}/ {item.api_body}", file=sys.stderr)
-
-            result = api_patch(f"work-items/{item.existing_uuid}/", item.api_body, critical=False)
-            if result:
-                updated_count += 1
-                print(f"  [OK] Updated {item.spec.existing_id}: {', '.join(item.api_body.keys())}", file=sys.stderr)
-            else:
-                print(f"  [FAIL] {item.spec.existing_id} — {result}", file=sys.stderr)
-            time.sleep(0.3)
+        if bulk_active:
+            updated_count += _bulk_update_items(updates, verbose)
+        else:
+            for item in updates:
+                if not item.existing_uuid:
+                    print(f"  [SKIP] {item.spec.existing_id}: UUID not resolved", file=sys.stderr)
+                    continue
+                if _update_item_v1(item, verbose):
+                    updated_count += 1
+                time.sleep(0.3)
 
     # ── Creates (topologically sorted) ───────────────────────────────────────
     if creates:
         ordered = topological_sort(creates)
         print(f"\nCreating {len(ordered)} work items...", file=sys.stderr)
-
-        for item in ordered:
-            # Resolve parent if it's a temp ref
-            parent_ref = item.spec.parent_ref.upper() if item.spec.parent_ref else ""
-            if parent_ref.startswith("NEW-") and parent_ref in temp_to_uuid:
-                item.api_body["parent"] = temp_to_uuid[parent_ref]
-
-            if verbose:
-                print(f"  [POST] work-items/ {item.api_body}", file=sys.stderr)
-
-            result = api_post("work-items/", item.api_body, critical=False)
-            if not result or "id" not in result:
-                print(f"  [FAIL] {item.spec.ref}: {item.spec.name} — {result}", file=sys.stderr)
-                continue
-
-            item.created_id = result["id"]
-            item.created_seq = result.get("sequence_id")
-            temp_to_uuid[item.spec.ref.upper()] = item.created_id
-            created_count += 1
-            print(f"  [OK] {item.spec.ref} → {item.created_seq}: {item.spec.name}", file=sys.stderr)
-            time.sleep(0.3)
+        if bulk_active:
+            created_count += _bulk_create_items(ordered, temp_to_uuid, verbose)
+        else:
+            for item in ordered:
+                if _create_item_v1(item, temp_to_uuid, verbose):
+                    created_count += 1
+                time.sleep(0.3)
 
     # ── Post-create: relations, modules, cycles, comments, links ─────────────
     # Collect all items that have a UUID (created or existing)
@@ -1652,7 +1916,8 @@ def execute(resolved: list[ResolvedItem],
         print(f"\nCreated items:", file=sys.stderr)
         for r in active:
             if r.created_id:
-                print(f"  {r.spec.ref} → {r.created_seq}: {r.spec.name}", file=sys.stderr)
+                seq_part = f" → {r.created_seq}" if r.created_seq else ""
+                print(f"  {r.spec.ref}{seq_part}: {r.spec.name}", file=sys.stderr)
 
 
 # ── Main ────────────────────────────────────────────────────────────────────
