@@ -11,6 +11,7 @@ or from environment variable.
 Usage:
     python3 plane_snapshot.py --profile my-project
     python3 plane_snapshot.py --profile my-project --descriptions
+    python3 plane_snapshot.py --profile my-project --since prev.md
     python3 plane_snapshot.py -w my-workspace -p <project-uuid> -o ./snapshot.md
     python3 plane_snapshot.py -w my-workspace -p <project-uuid> --env /path/to/.env
 """
@@ -18,17 +19,20 @@ Usage:
 import argparse
 import concurrent.futures
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 from plane_api import (
-    load_dotenv, get_warnings, set_api_version, set_base_url,
-    api_get, api_get_list, api_get_paginated, load_profile,
-    html_to_text, detect_prefix, validate_profile_paths, list_profiles,
-    get_request_count,
+    load_dotenv, get_warnings, set_api_version, get_api_version, set_base_url,
+    api_get, api_get_list, api_get_paginated, api_v2_get, v2_enabled,
+    load_profile, html_to_text, detect_prefix, validate_profile_paths,
+    list_profiles, get_request_count,
 )
-from plane_md import INTAKE_STATUS, STATE_GROUP_COLS, count_by_state_group, esc_md_cell, format_item_id
+from plane_md import (INTAKE_STATUS, STATE_GROUP_COLS, count_by_state_group,
+                      esc_md_cell, format_item_id, split_md_table_row,
+                      unesc_md_cell)
 
 # Concurrency for per-item N+1 fetches (relations, page contents). Conservative
 # default against Plane cloud rate limit (~50 req/min); 429s are handled by the
@@ -36,6 +40,40 @@ from plane_md import INTAKE_STATUS, STATE_GROUP_COLS, count_by_state_group, esc_
 # self-throttles rather than failing.
 FETCH_WORKERS = 3
 
+# ── Incremental snapshot (--since) ───────────────────────────────────────────
+# The v2 `fields=` selector is EXCLUSIVE (E-008): an explicit list must name
+# every renderer field plus description_html; `id` is always returned.
+V2_FIELDS_WITH_DESCRIPTIONS = ",".join([
+    "name", "sequence_id", "state_id", "priority", "assignee_ids",
+    "label_ids", "parent_id", "module_ids", "updated_at", "description_html",
+])
+V2_DIRECTORY_FIELDS = "id,sequence_id,module_ids"
+
+_LISTED_RE = re.compile(r"^Listed:\s*(\S+)", re.MULTILINE)
+
+# Snapshot sections whose "## <Name>" line always means a section boundary.
+# A "## ..." line inside a Descriptions block (markdown heading inside a
+# rendered description) must not be mistaken for one.
+_KNOWN_SECTIONS = {"States", "Labels", "Members", "Modules", "Work Items",
+                   "Relations", "Descriptions", "Intake", "Warnings"}
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse_iso_ts(value: str) -> datetime:
+    """Parse an API timestamp ("...Z" or "...+07:00") into an aware datetime."""
+    s = value.strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+# ── Data Fetching ────────────────────────────────────────────────────────────
 
 def _fetch_concurrent(items: list, fetch_fn, label: str, log_every: int) -> dict:
     """Fetch over items concurrently. fetch_fn(item) -> (key, value | None).
@@ -58,11 +96,27 @@ def _fetch_concurrent(items: list, fetch_fn, label: str, log_every: int) -> dict
     return results
 
 
-# ── Data Fetching ────────────────────────────────────────────────────────────
+def _fetch_relations(item: dict):
+    item_id = item["id"]
+    data = api_get(f"work-items/{item_id}/relations/",
+                   max_retries=3, critical=False)
+    # Only keep items that actually have relations
+    if data and any(isinstance(v, list) and len(v) > 0 for v in data.values()):
+        return item_id, data
+    return item_id, None
 
-def fetch_all_data(include_descriptions: bool, include_pages: bool = False,
-                   include_intake: bool = False) -> dict:
-    """Fetch all project data from Plane API."""
+
+def _fetch_page(page: dict):
+    page_data = api_get(f"pages/{page['id']}/", max_retries=3, critical=False)
+    if page_data:
+        page_data["parent_id"] = page.get("parent_id")  # merge from list
+        return page["id"], page_data
+    return page["id"], None
+
+
+def fetch_base_data(include_intake: bool) -> dict:
+    """Fetch the cheap full-refetch data: states, labels, members, modules
+    (+ intake). Shared by the full and the --since path."""
     print("Fetching states...", file=sys.stderr)
     states = api_get_list("states/")
 
@@ -74,56 +128,6 @@ def fetch_all_data(include_descriptions: bool, include_pages: bool = False,
 
     print("Fetching modules...", file=sys.stderr)
     modules = api_get_list("modules/")
-
-    print("Fetching work items...", file=sys.stderr)
-    work_items = api_get_paginated("work-items/")
-    print(f"  Got {len(work_items)} work items", file=sys.stderr)
-
-    # Build module membership: module_id → set of item UUIDs
-    print("Fetching module memberships...", file=sys.stderr)
-    module_membership: dict[str, set[str]] = {}
-    for mod in modules:
-        mod_id = mod["id"]
-        mod_name = mod["name"]
-        print(f"  Module: {mod_name}...", file=sys.stderr)
-        mod_items = api_get_paginated(f"modules/{mod_id}/module-issues/")
-        module_membership[mod_id] = {item["id"] for item in mod_items}
-
-    # Fetch relations concurrently (N+1: one request per work item)
-    print(f"Fetching relations for {len(work_items)} items...", file=sys.stderr)
-
-    def _fetch_relations(item):
-        item_id = item["id"]
-        data = api_get(f"work-items/{item_id}/relations/",
-                       max_retries=3, critical=False)
-        # Only keep items that actually have relations
-        if data and any(isinstance(v, list) and len(v) > 0 for v in data.values()):
-            return item_id, data
-        return item_id, None
-
-    relations: dict[str, dict] = _fetch_concurrent(
-        work_items, _fetch_relations, "Relations", 50)
-
-    print(f"  Got relations for {len(relations)} items", file=sys.stderr)
-
-    # Fetch pages (opt-in, N+1: one request per page for content)
-    pages: list[dict] = []
-    if include_pages:
-        print("Fetching pages...", file=sys.stderr)
-        pages_list = api_get_list("pages/")
-        print(f"  Got {len(pages_list)} pages, fetching content...", file=sys.stderr)
-
-        def _fetch_page(page):
-            page_data = api_get(f"pages/{page['id']}/", max_retries=3, critical=False)
-            if page_data:
-                page_data["parent_id"] = page.get("parent_id")  # merge from list
-                return page["id"], page_data
-            return page["id"], None
-
-        pages_by_id = _fetch_concurrent(pages_list, _fetch_page, "Pages", 10)
-        # Preserve original list order (concurrent fetch completes out of order)
-        pages = [pages_by_id[p["id"]] for p in pages_list if p["id"] in pages_by_id]
-        print(f"  Fetched content for {len(pages)} pages", file=sys.stderr)
 
     # Fetch intake items (opt-in). The list endpoint embeds issue_detail, so a
     # single paginated call is enough — no per-item retrieve needed.
@@ -152,13 +156,352 @@ def fetch_all_data(include_descriptions: bool, include_pages: bool = False,
         "labels": labels,
         "members": members,
         "modules": modules,
+        "intake": intake,
+    }
+
+
+def fetch_all_data(include_descriptions: bool, include_pages: bool = False,
+                   include_intake: bool = False) -> dict:
+    """Fetch all project data from Plane API (full snapshot)."""
+    data = fetch_base_data(include_intake)
+    states, labels, members, modules = (data["states"], data["labels"],
+                                        data["members"], data["modules"])
+    intake = data["intake"]
+
+    # Watermark for a later --since run: fixed immediately before the listing
+    # request (conservative — edits made during the listing itself land in the
+    # next increment).
+    listed_at = _utc_now_iso()
+    print("Fetching work items...", file=sys.stderr)
+    work_items = api_get_paginated("work-items/")
+    print(f"  Got {len(work_items)} work items", file=sys.stderr)
+
+    # Build module membership: module_id → set of item UUIDs
+    print("Fetching module memberships...", file=sys.stderr)
+    module_membership: dict[str, set[str]] = {}
+    for mod in modules:
+        mod_id = mod["id"]
+        mod_name = mod["name"]
+        print(f"  Module: {mod_name}...", file=sys.stderr)
+        mod_items = api_get_paginated(f"modules/{mod_id}/module-issues/")
+        module_membership[mod_id] = {item["id"] for item in mod_items}
+
+    # Fetch relations concurrently (N+1: one request per work item)
+    print(f"Fetching relations for {len(work_items)} items...", file=sys.stderr)
+
+    relations: dict[str, dict] = _fetch_concurrent(
+        work_items, _fetch_relations, "Relations", 50)
+
+    print(f"  Got relations for {len(relations)} items", file=sys.stderr)
+
+    # Fetch pages (opt-in, N+1: one request per page for content)
+    pages: list[dict] = []
+    if include_pages:
+        print("Fetching pages...", file=sys.stderr)
+        pages_list = api_get_list("pages/")
+        print(f"  Got {len(pages_list)} pages, fetching content...", file=sys.stderr)
+
+        pages_by_id = _fetch_concurrent(pages_list, _fetch_page, "Pages", 10)
+        # Preserve original list order (concurrent fetch completes out of order)
+        pages = [pages_by_id[p["id"]] for p in pages_list if p["id"] in pages_by_id]
+        print(f"  Fetched content for {len(pages)} pages", file=sys.stderr)
+
+    data.update({
         "work_items": work_items,
         "module_membership": module_membership,
         "relations": relations,
         "include_descriptions": include_descriptions,
         "pages": pages,
-        "intake": intake,
+        "listed_at": listed_at,
+        "item_count": len(work_items),
+    })
+    return data
+
+
+# ── Since-mode fetching (v2) ─────────────────────────────────────────────────
+
+def fetch_changed_items_v2(watermark: datetime, include_descriptions: bool) -> list[dict]:
+    """v2 work-items ordered by -updated_at, cursor pages until the FIRST row
+    older than the watermark; rows of that page at/after the watermark are
+    still changed (INV-06). Unparsable/absent updated_at → conservative keep.
+    """
+    params = {"per_page": "100", "paginate": "cursor", "order_by": "-updated_at"}
+    if include_descriptions:
+        params["fields"] = V2_FIELDS_WITH_DESCRIPTIONS
+    changed: list[dict] = []
+    while True:
+        envelope = api_v2_get("work-items/", params=params)
+        stop = False
+        for row in envelope.get("data") or []:
+            try:
+                row_is_new = parse_iso_ts(row["updated_at"]) >= watermark
+            except (KeyError, TypeError, ValueError):
+                row_is_new = True
+            if row_is_new:
+                changed.append(row)
+            else:
+                stop = True  # -updated_at order: everything after is older
+                break
+        if stop or not envelope.get("has_more") or not envelope.get("next_cursor"):
+            break
+        params["cursor"] = envelope["next_cursor"]
+    return changed
+
+
+def fetch_item_directory() -> dict[str, dict]:
+    """uuid → {"seq": sequence_id, "module_ids": [...]} for every existing item
+    (v2 walk, one cursor request per 100 rows).
+
+    The full existing-item set is the deletion oracle for --since (deleted
+    items are absent from the -updated_at listing). The walk also carries the
+    identity map for relation rendering and fresh-child parent placement, and
+    module_ids — live-verified equal to the v1 module-issues membership
+    (probe: 9/9 modules, 0 mismatches) — so module counters stay exact without
+    per-module refetches.
+    """
+    directory: dict[str, dict] = {}
+    params = {"per_page": "100", "paginate": "cursor",
+              "fields": V2_DIRECTORY_FIELDS}
+    while True:
+        envelope = api_v2_get("work-items/", params=params)
+        for row in envelope.get("data") or []:
+            directory[row["id"]] = {
+                "seq": row.get("sequence_id"),
+                "module_ids": list(row.get("module_ids") or []),
+            }
+        if not envelope.get("has_more") or not envelope.get("next_cursor"):
+            break
+        params["cursor"] = envelope["next_cursor"]
+    return directory
+
+
+def v2_row_to_item(row: dict) -> dict:
+    """v2 row → v1-shaped item dict (A5 field map, E-008 parity). The v2 row
+    is the single data carrier for changed items in a --since run."""
+    return {
+        "id": row.get("id", ""),
+        "sequence_id": row.get("sequence_id", 0),
+        "name": row.get("name", ""),
+        "priority": row.get("priority", ""),
+        "state": row.get("state_id", ""),
+        "assignees": list(row.get("assignee_ids") or []),
+        "labels": list(row.get("label_ids") or []),
+        "parent": row.get("parent_id") or "",
+        "module_ids": list(row.get("module_ids") or []),
+        "description_html": row.get("description_html") or "",
     }
+
+
+def fetch_since_data(args, prev: dict, watermark: datetime) -> dict:
+    """--since run: base data fresh; work items via the v2 incremental path."""
+    data = fetch_base_data(args.intake)
+    modules = data["modules"]
+
+    print("Fetching changed work items (v2, --since)...", file=sys.stderr)
+    listed_at = _utc_now_iso()
+    changed_rows = fetch_changed_items_v2(watermark, args.descriptions)
+    print(f"  {len(changed_rows)} items updated since {prev['listed']}", file=sys.stderr)
+
+    print("Fetching existing items directory (v2)...", file=sys.stderr)
+    directory = fetch_item_directory()
+    print(f"  {len(directory)} items exist now", file=sys.stderr)
+
+    fresh_items = [v2_row_to_item(row) for row in changed_rows]
+
+    # Relations: the Q2 probe showed creating a relation does NOT bump
+    # updated_at of either end, so the watermark cannot filter relation
+    # changes — relations are refetched for ALL existing items (E-006: the
+    # API has no batch relations endpoint, this stays per-item).
+    relation_ids = list(directory.keys())
+    for item in fresh_items:
+        if item["id"] not in directory:
+            relation_ids.append(item["id"])
+    print(f"Fetching relations for {len(relation_ids)} items...", file=sys.stderr)
+    relations: dict[str, dict] = _fetch_concurrent(
+        [{"id": uuid} for uuid in relation_ids], _fetch_relations, "Relations", 50)
+    print(f"  Got relations for {len(relations)} items", file=sys.stderr)
+
+    # Pages (opt-in): the v1 list is fetched whole; content only for pages
+    # whose updated_at is at/after the watermark. Unchanged pages carry their
+    # content from the previous <output>.pages.md, matched by page name.
+    pages: list[dict] = []
+    if args.pages:
+        print("Fetching pages...", file=sys.stderr)
+        pages_list = api_get_list("pages/")
+        pages_path = args.output.with_name(args.output.stem + ".pages" + args.output.suffix)
+        prev_pages: dict[str, str] | None = None
+        if pages_path.is_file():
+            prev_pages = parse_prev_pages(pages_path.read_text(encoding="utf-8"))
+        else:
+            print(f"  Note: {pages_path.name} not found — unchanged pages "
+                  f"will have no carried content", file=sys.stderr)
+        to_fetch = []
+        for page in pages_list:
+            try:
+                page_is_new = parse_iso_ts(page["updated_at"]) >= watermark
+            except (KeyError, TypeError, ValueError):
+                page_is_new = True
+            if page_is_new:
+                to_fetch.append(page)
+        print(f"  Got {len(pages_list)} pages, fetching content for "
+              f"{len(to_fetch)} updated...", file=sys.stderr)
+        fetched = _fetch_concurrent(to_fetch, _fetch_page, "Pages", 10) if to_fetch else {}
+        for page in pages_list:
+            if page["id"] in fetched:
+                pages.append(fetched[page["id"]])
+            else:
+                carried = (prev_pages or {}).get(unesc_md_cell(page.get("name", "")))
+                pages.append({**page, "description_text": carried or ""})
+        print(f"  Fetched content for {len(to_fetch)} pages, carried "
+              f"{len(pages) - len(to_fetch)}", file=sys.stderr)
+
+    if args.descriptions and not prev["has_descriptions"]:
+        print("  Note: previous snapshot has no Descriptions section — "
+              "carried items will lack descriptions", file=sys.stderr)
+
+    # Fresh-only module membership, keyed in the modules API order so that
+    # build_maps' first-module resolution matches the full path. Carried rows
+    # keep their previous Module column byte-in-byte.
+    fresh_membership: dict[str, set] = {m["id"]: set() for m in modules}
+    for item in fresh_items:
+        for mod_id in item.get("module_ids") or []:
+            if mod_id in fresh_membership:
+                fresh_membership[mod_id].add(item["id"])
+
+    data.update({
+        "work_items": fresh_items,
+        "module_membership": fresh_membership,
+        "relations": relations,
+        "include_descriptions": args.descriptions,
+        "pages": pages,
+        "listed_at": listed_at,
+        "item_count": len(directory),
+        "since": {
+            "watermark": prev["listed"],
+            # Raw parsed previous-file structures; the merge (byte-in-byte
+            # carry of unchanged rows, deletion of vanished items, orphan
+            # promotion) happens in build_item_rows / build_desc_blocks.
+            "top_rows": prev["top_rows"],
+            "children": prev["children"],
+            "desc_blocks": prev["desc_blocks"],
+            "directory": directory,
+        },
+    })
+    return data
+
+
+# ── Previous-snapshot parsing (byte-exact carry) ─────────────────────────────
+
+def _row_seq(item_id: str) -> int | None:
+    head, _, tail = item_id.strip().rpartition("-")
+    if not head or not tail.isdigit():
+        return None
+    return int(tail)
+
+
+def _is_separator_row(line: str) -> bool:
+    cells = split_md_table_row(line.strip())
+    return bool(cells) and all(set(c) <= {"-", ":"} and c for c in cells)
+
+
+def parse_prev_snapshot(text: str) -> dict:
+    """Extract the Listed watermark and byte-exact carry blocks from a
+    previous snapshot: work-item table rows (top-level and per-parent
+    children) and Descriptions blocks. Everything else is refetched fresh
+    in a --since run.
+    """
+    listed_match = _LISTED_RE.search("\n".join(text.splitlines()[:10]))
+    prev = {
+        "listed": listed_match.group(1) if listed_match else None,
+        "has_descriptions": False,
+        "top_rows": {},      # seq → exact table line
+        "children": {},      # parent_seq → {"heading": line, "rows": {seq: line}}
+        "desc_blocks": {},   # seq → [exact block lines incl. heading]
+    }
+    section = None
+    current_parent = None
+    desc_seq = None
+    for line in text.splitlines():
+        if line.startswith("## "):
+            name = line[3:].strip()
+            if name in _KNOWN_SECTIONS:
+                section = name
+                if name == "Descriptions":
+                    prev["has_descriptions"] = True
+                current_parent = None
+                desc_seq = None
+                continue
+        if line.startswith("#### "):
+            # Children block heading: "#### PREFIX-N: Name"
+            current_parent = None
+            if section == "Work Items":
+                seq = _row_seq(line[5:].split(":", 1)[0])
+                if seq is not None:
+                    current_parent = seq
+                    prev["children"].setdefault(
+                        seq, {"heading": line, "rows": {}})
+            continue
+        if line.startswith("### "):
+            current_parent = None
+            if section == "Descriptions":
+                seq = _row_seq(line[4:].split(":", 1)[0])
+                if seq is not None:
+                    desc_seq = seq
+                    prev["desc_blocks"].setdefault(seq, [line])
+                else:
+                    desc_seq = None
+            continue
+        if section == "Work Items" and line.strip().startswith("|"):
+            if _is_separator_row(line):
+                continue
+            cells = split_md_table_row(line.strip())
+            # table header row (| ID | Name | ...)
+            if cells and unesc_md_cell(cells[0]).strip().lower() == "id":
+                continue
+            seq = _row_seq(unesc_md_cell(cells[0])) if cells else None
+            if seq is None:
+                continue
+            if current_parent is None:
+                prev["top_rows"][seq] = line
+            elif current_parent in prev["children"]:
+                prev["children"][current_parent]["rows"][seq] = line
+            continue
+        if section == "Descriptions" and desc_seq is not None:
+            if line.strip() == "":
+                desc_seq = None  # block body ended (separator before next block)
+                continue
+            prev["desc_blocks"][desc_seq].append(line)
+    return prev
+
+
+def parse_prev_pages(text: str) -> dict[str, str]:
+    """Page name → carried content text from a previous <output>.pages.md.
+
+    Blocks are "<###+ name>" headings followed by an "Owner: ..." meta line
+    and content lines up to the next heading.
+    """
+    blocks: dict[str, list[str]] = {}
+    current = None
+    in_content = False
+    for line in text.splitlines():
+        if line.startswith("## "):
+            current = None
+            continue
+        stripped = line.lstrip("#")
+        heading_level = len(line) - len(stripped)
+        if 3 <= heading_level <= 6 and stripped.startswith(" "):
+            current = unesc_md_cell(stripped.strip())
+            blocks.setdefault(current, [])
+            in_content = False
+            continue
+        if current is None:
+            continue
+        if line.startswith("Owner:"):
+            in_content = True
+            continue
+        if in_content:
+            blocks[current].append(line)
+    return {name: "\n".join(lines).rstrip("\n") for name, lines in blocks.items()}
 
 
 # ── Lookup Maps ──────────────────────────────────────────────────────────────
@@ -202,11 +545,15 @@ def validate(data: dict, maps: dict) -> list[str]:
     warnings = list(get_warnings())  # include any fetch-time warnings
 
     work_items = data["work_items"]
-    if not work_items:
+    since = data.get("since")
+    if not work_items and not since:
         print("Error: No work items found. Check project ID and workspace.", file=sys.stderr)
         sys.exit(1)
 
-    item_ids = {item["id"] for item in work_items}
+    if since:
+        item_ids = set(since["directory"]) | {item["id"] for item in work_items}
+    else:
+        item_ids = {item["id"] for item in work_items}
 
     for item in work_items:
         seq_id = item["sequence_id"]
@@ -243,15 +590,234 @@ def validate(data: dict, maps: dict) -> list[str]:
     return warnings
 
 
+# ── Render-input builders (shared by full and --since paths) ─────────────────
+
+def build_module_counts(data: dict, maps: dict) -> dict[str, dict]:
+    """DEC-016 per-state-group counters per module, computed locally.
+
+    Full path: from the fetched module membership. --since path: from the v2
+    directory walk's module_ids (live-verified equal to the v1 module-issues
+    membership, 0 mismatches on the test project's 9 modules), so counters
+    stay exact without per-module refetches. State groups: changed items from
+    their v2 state_id; carried items from the previous file's State cell (by
+    sequence id) through the fresh states list.
+    """
+    since = data.get("since")
+    if not since:
+        item_state_group = {
+            item["id"]: maps["state"].get(item.get("state", ""), {}).get("group")
+            for item in data["work_items"]
+        }
+        return {
+            m["id"]: count_by_state_group(
+                item_state_group.get(item_id)
+                for item_id in data["module_membership"].get(m["id"], set()))
+            for m in data["modules"]
+        }
+
+    directory = since["directory"]  # uuid → {"seq", "module_ids"}
+    groups: dict[str, list] = {m["id"]: [] for m in data["modules"]}
+
+    state_group_by_name: dict[str, str] = {}
+    for s in data["states"]:
+        state_group_by_name.setdefault(s["name"], s["group"])
+    fresh_by_id = {item["id"]: item for item in data["work_items"]}
+    seq_to_row = dict(since["top_rows"])
+    for block in since["children"].values():
+        seq_to_row.update(block["rows"])
+
+    def _group_of(uuid: str):
+        item = fresh_by_id.get(uuid)
+        if item is not None:  # changed item: resolve via its v2 state_id
+            return maps["state"].get(item.get("state", ""), {}).get("group")
+        info = directory.get(uuid) or {}
+        line = seq_to_row.get(info.get("seq"))  # carried row's State cell
+        if line is None:
+            return None
+        cells = split_md_table_row(line)
+        if len(cells) < 3:
+            return None
+        return state_group_by_name.get(unesc_md_cell(cells[2]).strip())
+
+    for uuid, info in directory.items():
+        grp = _group_of(uuid)
+        for mod_id in info.get("module_ids") or []:
+            if mod_id in groups:
+                groups[mod_id].append(grp)
+    for item in data["work_items"]:  # defensive: fresh rows absent from the walk
+        if item["id"] in directory:
+            continue
+        grp = maps["state"].get(item.get("state", ""), {}).get("group")
+        for mod_id in item.get("module_ids") or []:
+            if mod_id in groups:
+                groups[mod_id].append(grp)
+    return {mod_id: count_by_state_group(g) for mod_id, g in groups.items()}
+
+
+def build_item_rows(data: dict, maps: dict, id_prefix: str) -> dict:
+    """Work Items table rows as exact line strings.
+
+    Returns {"top": [(seq, line)], "children": [(parent_seq, heading, [(seq, line)])]}.
+    Full path renders every row from its item dict (byte-identical to the
+    previous inline renderer); --since keeps unchanged rows byte-in-byte and
+    renders changed/new ones fresh.
+    """
+    work_items = data["work_items"]
+    since = data.get("since")
+
+    def _row(item: dict, top: bool) -> str:
+        item_id = format_item_id(id_prefix, item["sequence_id"])
+        state = maps["state"].get(item.get("state", ""), {}).get("name", "unknown")
+        labels = ", ".join(maps["label"].get(lid, "?") for lid in item.get("labels", []))
+        assignees = ", ".join(maps["member"].get(aid, aid[:8])
+                              for aid in item.get("assignees", []))
+        cells = [item_id, esc_md_cell(item["name"]), state, item["priority"],
+                 labels, assignees]
+        if top:
+            cells.append(maps["item_module"].get(item["id"], ""))
+        return "| " + " | ".join(cells) + " |"
+
+    if not since:
+        item_ids = {item["id"] for item in work_items}
+        top_level = [item for item in work_items
+                     if not item.get("parent") or item["parent"] not in item_ids]
+        children_by_parent: dict[str, list[dict]] = {}
+        for item in work_items:
+            parent = item.get("parent")
+            if parent and parent in item_ids:
+                children_by_parent.setdefault(parent, []).append(item)
+
+        top_rows = [(i["sequence_id"], _row(i, top=True))
+                    for i in sorted(top_level, key=lambda x: x["sequence_id"])]
+        child_blocks = []
+        for parent in sorted(top_level, key=lambda x: x["sequence_id"]):
+            kids = children_by_parent.get(parent["id"], [])
+            if not kids:
+                continue
+            heading = (f"#### {format_item_id(id_prefix, parent['sequence_id'])}: "
+                       f"{esc_md_cell(parent['name'])}")
+            child_blocks.append((parent["sequence_id"], heading,
+                                 [(c["sequence_id"], _row(c, top=False))
+                                  for c in sorted(kids, key=lambda x: x["sequence_id"])]))
+        return {"top": top_rows, "children": child_blocks}
+
+    # --since path
+    directory = since["directory"]
+    existing_seqs = {info["seq"] for info in directory.values()}
+    fresh_by_seq = {item["sequence_id"]: item for item in work_items}
+    fresh_seqs = set(fresh_by_seq)
+
+    def _carried(seq: int) -> bool:
+        # unchanged: item still exists and was not re-rendered from a v2 row
+        return seq in existing_seqs and seq not in fresh_seqs
+
+    fresh_top_rows: list[tuple[int, str]] = []
+    fresh_child_rows: dict[int, list[tuple[int, str]]] = {}
+    for item in work_items:
+        parent = item.get("parent") or ""
+        pinfo = directory.get(parent) if parent else None
+        pseq = pinfo["seq"] if pinfo else None
+        if pseq is None:
+            fresh_top_rows.append((item["sequence_id"], _row(item, top=True)))
+        else:
+            fresh_child_rows.setdefault(pseq, []).append(
+                (item["sequence_id"], _row(item, top=False)))
+
+    top_rows = [(seq, line) for seq, line in since["top_rows"].items() if _carried(seq)]
+
+    child_rows_by_parent: dict[int, list[tuple[int, str]]] = {}
+    for pseq, rows in fresh_child_rows.items():
+        child_rows_by_parent.setdefault(pseq, []).extend(rows)
+    for pseq, block in since["children"].items():
+        rows = [(seq, line) for seq, line in block["rows"].items() if _carried(seq)]
+        if not rows:
+            continue
+        if pseq not in existing_seqs:
+            # Parent deleted while the child is alive: Plane normally bumps
+            # (SET_NULL) or cascades children, so this is rare. Promote the
+            # carried row to the top-level table. Children tables have no
+            # Module column and a carried item's module membership is not
+            # recoverable, so the promoted row gets an empty Module cell.
+            top_rows.extend((seq, line + "  |") for seq, line in rows)
+        else:
+            child_rows_by_parent.setdefault(pseq, []).extend(rows)
+    top_rows.extend(fresh_top_rows)
+
+    top_seqs = {seq for seq, _ in top_rows}
+    top_rows.sort(key=lambda x: x[0])
+
+    child_blocks = []
+    for pseq in sorted(child_rows_by_parent):
+        if pseq not in top_seqs:
+            # Parent is itself a child: the renderer only emits blocks for
+            # top-level parents (pre-existing flattening, preserved).
+            continue
+        rows = sorted(child_rows_by_parent[pseq], key=lambda x: x[0])
+        carried_block = since["children"].get(pseq)
+        if carried_block and pseq in existing_seqs:
+            heading = carried_block["heading"]
+        else:
+            parent_item = fresh_by_seq.get(pseq)
+            if parent_item is not None:
+                heading = (f"#### {format_item_id(id_prefix, pseq)}: "
+                           f"{esc_md_cell(parent_item['name'])}")
+            else:
+                # Unchanged parent that had no children block before: reuse the
+                # (already escaped) name cell from its carried row.
+                line = since["top_rows"].get(pseq, "")
+                cells = split_md_table_row(line)
+                name_cell = cells[1] if len(cells) > 1 else ""
+                heading = f"#### {format_item_id(id_prefix, pseq)}: {name_cell}"
+        child_blocks.append((pseq, heading, rows))
+    return {"top": top_rows, "children": child_blocks}
+
+
+def build_desc_blocks(data: dict, maps: dict, id_prefix: str) -> list[tuple[int, list]]:
+    """Descriptions blocks as (seq, [lines]) sorted by seq; lines include the
+    heading, the trailing "" separator is added by the renderer."""
+    if not data.get("include_descriptions"):
+        return []
+    work_items = data["work_items"]
+    since = data.get("since")
+
+    def _fresh_block(item: dict) -> tuple[int, list] | None:
+        desc = html_to_text(item.get("description_html", "") or "")
+        if not desc:
+            return None
+        heading = (f"### {format_item_id(id_prefix, item['sequence_id'])}: "
+                   f"{esc_md_cell(item['name'])}")
+        return item["sequence_id"], [heading, desc]
+
+    if not since:
+        blocks = []
+        for item in sorted(work_items, key=lambda x: x["sequence_id"]):
+            block = _fresh_block(item)
+            if block:
+                blocks.append(block)
+        return blocks
+
+    blocks = []
+    for item in sorted(work_items, key=lambda x: x["sequence_id"]):
+        block = _fresh_block(item)
+        if block:
+            blocks.append(block)
+    directory = since["directory"]
+    existing_seqs = {info["seq"] for info in directory.values()}
+    fresh_seqs = {item["sequence_id"] for item in work_items}
+    blocks.extend((seq, list(lines)) for seq, lines in since["desc_blocks"].items()
+                  if seq in existing_seqs and seq not in fresh_seqs)
+    blocks.sort(key=lambda x: x[0])
+    return blocks
+
+
 # ── Markdown Rendering ───────────────────────────────────────────────────────
 
 def render_markdown(data: dict, maps: dict, warnings: list[str],
                     workspace: str, project_id: str, id_prefix: str) -> str:
     """Render all data as a markdown snapshot."""
     lines: list[str] = []
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = _utc_now_iso()
 
-    work_items = data["work_items"]
     relations = data["relations"]
 
     # Count total relations
@@ -265,8 +831,9 @@ def render_markdown(data: dict, maps: dict, warnings: list[str],
     # Header
     lines.append(f"# Plane Snapshot")
     lines.append(f"Generated: {now} | Workspace: {workspace} | Project: {project_id[:8]}... ({id_prefix})")
+    lines.append(f"Listed: {data['listed_at']}")
     intake = data.get("intake", [])
-    header_parts = [f"Items: {len(work_items)}", f"Relations: {total_relations}",
+    header_parts = [f"Items: {data['item_count']}", f"Relations: {total_relations}",
                     f"Modules: {len(data['modules'])}"]
     if intake:
         header_parts.append(f"Intake: {len(intake)}")
@@ -306,75 +873,38 @@ def render_markdown(data: dict, maps: dict, warnings: list[str],
     lines.append("")
 
     # Modules
-    # Per-state counts recomputed locally: Plane API's *_issues fields are unreliable
-    # (return ~1 per column regardless of module size). total_issues is correct, so kept.
-    item_state_group = {
-        item["id"]: maps["state"].get(item.get("state", ""), {}).get("group")
-        for item in work_items
-    }
+    # Per-state counts recomputed locally (DEC-016): Plane API's *_issues
+    # fields are unreliable (return ~1 per column regardless of module size).
+    # total_issues is correct, so kept.
     lines.append("## Modules")
     lines.append("| Name | Total | Done | In Progress | Todo | Backlog | Cancelled |")
     lines.append("|---|---|---|---|---|---|---|")
+    module_counts = data["module_counts"]
     for m in sorted(data["modules"], key=lambda x: x.get("sort_order", 0)):
-        counts = count_by_state_group(
-            item_state_group.get(item_id)
-            for item_id in data["module_membership"].get(m["id"], set())
-        )
+        counts = module_counts.get(m["id"], count_by_state_group([]))
         cells = " | ".join(str(counts[g]) for g, _ in STATE_GROUP_COLS)
         lines.append(f"| {esc_md_cell(m['name'])} | {m.get('total_issues', 0)} | {cells} |")
     lines.append("")
 
-    # Work Items — split into top-level and children
-    item_ids = {item["id"] for item in work_items}
-    top_level = [item for item in work_items if not item.get("parent") or item["parent"] not in item_ids]
-    children_by_parent: dict[str, list[dict]] = {}
-    for item in work_items:
-        parent = item.get("parent")
-        if parent and parent in item_ids:
-            children_by_parent.setdefault(parent, []).append(item)
-
-    def _item_id(item: dict) -> str:
-        return format_item_id(id_prefix, item["sequence_id"])
-
-
-    def _resolve_state(item: dict) -> str:
-        info = maps["state"].get(item.get("state", ""), {})
-        return info.get("name", "unknown")
-
-    def _resolve_labels(item: dict) -> str:
-        return ", ".join(maps["label"].get(lid, "?") for lid in item.get("labels", []))
-
-    def _resolve_assignees(item: dict) -> str:
-        return ", ".join(maps["member"].get(aid, aid[:8]) for aid in item.get("assignees", []))
-
-    def _resolve_module(item: dict) -> str:
-        return maps["item_module"].get(item["id"], "")
-
-    # Top-level items
+    # Work Items
+    item_rows = data["item_rows"]
     lines.append("## Work Items")
     lines.append("")
     lines.append("### Top-level")
     lines.append("| ID | Name | State | Priority | Labels | Assignees | Module |")
     lines.append("|---|---|---|---|---|---|---|")
-    for item in sorted(top_level, key=lambda x: x["sequence_id"]):
-        lines.append(f"| {_item_id(item)} | {esc_md_cell(item['name'])} | {_resolve_state(item)} | "
-                     f"{item['priority']} | {_resolve_labels(item)} | {_resolve_assignees(item)} | "
-                     f"{_resolve_module(item)} |")
+    for _seq, line in item_rows["top"]:
+        lines.append(line)
     lines.append("")
 
-    # Children grouped by parent
     lines.append("### Children (by parent)")
     lines.append("")
-    for parent_item in sorted(top_level, key=lambda x: x["sequence_id"]):
-        kids = children_by_parent.get(parent_item["id"], [])
-        if not kids:
-            continue
-        lines.append(f"#### {_item_id(parent_item)}: {esc_md_cell(parent_item['name'])}")
+    for _pseq, heading, rows in item_rows["children"]:
+        lines.append(heading)
         lines.append("| ID | Name | State | Priority | Labels | Assignees |")
         lines.append("|---|---|---|---|---|---|")
-        for child in sorted(kids, key=lambda x: x["sequence_id"]):
-            lines.append(f"| {_item_id(child)} | {esc_md_cell(child['name'])} | {_resolve_state(child)} | "
-                         f"{child['priority']} | {_resolve_labels(child)} | {_resolve_assignees(child)} |")
+        for _seq, line in rows:
+            lines.append(line)
         lines.append("")
 
     # Relations
@@ -400,12 +930,9 @@ def render_markdown(data: dict, maps: dict, warnings: list[str],
     if data.get("include_descriptions"):
         lines.append("## Descriptions")
         lines.append("")
-        for item in sorted(work_items, key=lambda x: x["sequence_id"]):
-            desc = html_to_text(item.get("description_html", "") or "")
-            if desc:
-                lines.append(f"### {_item_id(item)}: {esc_md_cell(item['name'])}")
-                lines.append(desc)
-                lines.append("")
+        for _seq, block_lines in data["desc_blocks"]:
+            lines.extend(block_lines)
+            lines.append("")
 
     # Intake (opt-in)
     if intake:
@@ -433,7 +960,7 @@ def render_markdown(data: dict, maps: dict, warnings: list[str],
     # Footer
     skipped = sum(1 for w in warnings if "not found" in w)
     lines.append("---")
-    lines.append(f"Generated by plane_snapshot.py | {len(work_items)} items, "
+    lines.append(f"Generated by plane_snapshot.py | {data['item_count']} items, "
                  f"{total_relations} relations, {len(warnings)} warnings, {skipped} skipped")
 
     return "\n".join(lines) + "\n"
@@ -442,7 +969,7 @@ def render_markdown(data: dict, maps: dict, warnings: list[str],
 def render_pages_md(pages: list, maps: dict, workspace: str, project_id: str) -> str:
     """Render project pages as a standalone markdown file (separate from snapshot)."""
     lines: list[str] = []
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = _utc_now_iso()
 
     lines.append("# Plane Pages")
     lines.append(f"Generated: {now} | Workspace: {workspace} | Project: {project_id[:8]}...")
@@ -471,7 +998,10 @@ def render_pages_md(pages: list, maps: dict, workspace: str, project_id: str) ->
         updated = page.get("updated_at", "")[:10]
         lines.append(f"Owner: {owner} | Access: {access} | Updated: {updated}")
         lines.append("")
-        content = html_to_text(page.get("description_html", "") or "")
+        if "description_text" in page:
+            content = page["description_text"]  # carried from a previous pages file
+        else:
+            content = html_to_text(page.get("description_html", "") or "")
         if content:
             lines.append(content)
             lines.append("")
@@ -493,6 +1023,7 @@ def main():
         epilog="""Examples:
   plane-sync snapshot --profile my-project
   plane-sync snapshot --profile my-project --descriptions
+  plane-sync snapshot --profile my-project --since prev.md
   plane-sync snapshot -w my-workspace -p <project-uuid> -o ./snapshot.md
 """)
     parser.add_argument("--profile",
@@ -511,6 +1042,9 @@ def main():
                         help="Export project pages with content to a separate <output>.pages.md file")
     parser.add_argument("--intake", action="store_true",
                         help="Include intake items (requires intake enabled on project)")
+    parser.add_argument("--since", type=Path, default=None, metavar="PREV_SNAPSHOT",
+                        help="Incremental snapshot: refetch only items updated since "
+                             "PREV_SNAPSHOT's Listed: time (requires profile api_version: auto)")
     parser.add_argument("-o", "--output", type=Path, default=None,
                         help="Output file path (default: ./snapshot.md)")
     parser.add_argument("--env", type=Path, default=None,
@@ -545,7 +1079,7 @@ def main():
         parser.print_usage(sys.stderr)
         sys.exit(1)
 
-    # Load .env
+    # Load .env (before the --since validation: the v2 probe authenticates)
     search_dirs = [Path.cwd(), args.output.resolve().parent]
     if args.env:
         if args.env.is_file():
@@ -553,6 +1087,40 @@ def main():
         elif args.env.is_dir():
             search_dirs.insert(0, args.env)
     load_dotenv(*search_dirs)
+
+    # --since prerequisites: checked before any network fetch. The mode check
+    # comes first so that a non-auto profile makes zero v2 requests (INV-04).
+    since_mode = args.since is not None
+    prev = None
+    watermark = None
+    if since_mode:
+        if not args.since.is_file():
+            print(f"Error: previous snapshot not found: {args.since}", file=sys.stderr)
+            sys.exit(1)
+        if get_api_version() != "auto":
+            print('Error: --since requires "api_version": "auto" in the profile '
+                  '(Plane v2 incremental API).', file=sys.stderr)
+            print('Add the key to the profile, or take a full snapshot without --since.',
+                  file=sys.stderr)
+            sys.exit(1)
+        prev = parse_prev_snapshot(args.since.read_text(encoding="utf-8"))
+        if not prev["listed"]:
+            print(f"Error: no 'Listed:' line in {args.since} (snapshot taken by an "
+                  f"older version).", file=sys.stderr)
+            print("Re-take a full snapshot without --since first, then use --since "
+                  "on the next run.", file=sys.stderr)
+            sys.exit(1)
+        try:
+            watermark = parse_iso_ts(prev["listed"])
+        except ValueError:
+            print(f"Error: unparsable 'Listed:' timestamp {prev['listed']!r} in "
+                  f"{args.since}.", file=sys.stderr)
+            sys.exit(1)
+        if not v2_enabled():
+            print("Error: --since requires the Plane v2 API, which is not available "
+                  "for this account (probe failed).", file=sys.stderr)
+            print("Take a full snapshot without --since instead.", file=sys.stderr)
+            sys.exit(1)
 
     # Set up base URL
     set_base_url(args.workspace, args.project)
@@ -566,7 +1134,13 @@ def main():
     print(f"  Output:    {args.output}", file=sys.stderr)
     print("", file=sys.stderr)
 
-    data = fetch_all_data(args.descriptions, args.pages, args.intake)
+    if since_mode:
+        data = fetch_since_data(args, prev, watermark)
+        if data["item_count"] == 0:
+            print("Error: No work items found. Check project ID and workspace.", file=sys.stderr)
+            sys.exit(1)
+    else:
+        data = fetch_all_data(args.descriptions, args.pages, args.intake)
 
     # Auto-detect prefix from project identifier if not given
     if not id_prefix:
@@ -574,6 +1148,11 @@ def main():
         print(f"  Auto-detected prefix: {id_prefix}", file=sys.stderr)
 
     maps = build_maps(data)
+    if since_mode:
+        # The directory supplies uuid→seq for unchanged items so that relation
+        # rows can be rendered to/from them.
+        for uuid, info in data["since"]["directory"].items():
+            maps["item"].setdefault(uuid, {"seq": info["seq"], "name": ""})
     warnings = validate(data, maps)
 
     if warnings:
@@ -581,6 +1160,10 @@ def main():
         for w in warnings:
             print(f"  - {w}", file=sys.stderr)
         print("", file=sys.stderr)
+
+    data["module_counts"] = build_module_counts(data, maps)
+    data["item_rows"] = build_item_rows(data, maps, id_prefix)
+    data["desc_blocks"] = build_desc_blocks(data, maps, id_prefix)
 
     md = render_markdown(data, maps, warnings, args.workspace, args.project, id_prefix)
 
@@ -599,7 +1182,10 @@ def main():
     print(f"Done! Snapshot saved to {args.output}", file=sys.stderr)
     if pages_path:
         print(f"  Pages saved to {pages_path}", file=sys.stderr)
-    parts = [f"{len(data['work_items'])} items",
+    if since_mode:
+        print(f"  Incremental (--since {args.since}): watermark {prev['listed']}, "
+              f"{len(data['work_items'])} items refetched", file=sys.stderr)
+    parts = [f"{data['item_count']} items",
              f"{len(data['modules'])} modules"]
     if pages:
         parts.append(f"{len(pages)} pages → {pages_path.name}")
