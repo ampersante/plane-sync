@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from plane_api import (
-    load_dotenv, get_warnings, set_api_version, get_api_version, set_base_url,
+    load_dotenv, get_warnings, set_api_version, get_api_version, set_base_url, set_api_origin,
     api_get, api_get_list, api_get_paginated, api_v2_get, v2_enabled,
     load_profile, html_to_text, detect_prefix, validate_profile_paths,
     list_profiles, get_request_count,
@@ -100,9 +100,26 @@ def _fetch_relations(item: dict):
     item_id = item["id"]
     data = api_get(f"work-items/{item_id}/relations/",
                    max_retries=3, critical=False)
+    if not isinstance(data, dict):
+        return item_id, None
+    # Plane cloud returns plain UUID strings; self-hosted returns
+    # {"issue_id": ..., "project_id": ...} dicts. Normalize to UUID strings.
+    normalized = {}
+    for key, value in data.items():
+        if isinstance(value, list):
+            ids = []
+            for el in value:
+                if isinstance(el, dict):
+                    if el.get("issue_id"):
+                        ids.append(el["issue_id"])
+                else:
+                    ids.append(el)
+            normalized[key] = ids
+        else:
+            normalized[key] = value
     # Only keep items that actually have relations
-    if data and any(isinstance(v, list) and len(v) > 0 for v in data.values()):
-        return item_id, data
+    if any(isinstance(v, list) and len(v) > 0 for v in normalized.values()):
+        return item_id, normalized
     return item_id, None
 
 
@@ -1068,6 +1085,7 @@ def main():
             args.env = Path(os.path.expanduser(profile["env"]))
         validate_profile_paths(profile, require_output=True)
         set_api_version(profile.get("api_version", "1"))
+        set_api_origin(profile.get("base_url"))
 
     # Defaults for values still not set
     if not args.output:

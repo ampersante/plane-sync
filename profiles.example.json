@@ -6,6 +6,13 @@
     "output": "~/project-a/snapshot.md",
     "api_version": "auto"
   },
+  "self-hosted": {
+    "workspace": "my-workspace-slug",
+    "project": "00000000-0000-0000-0000-000000000002",
+    "env": "~/project-c/.env",
+    "output": "~/project-c/snapshot.md",
+    "base_url": "https://plane.example.com"
+  },
   "another-project": {
     "workspace": "my-workspace-slug",
     "project": "00000000-0000-0000-0000-000000000001",

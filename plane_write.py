@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from plane_api import (
-    load_dotenv, set_base_url, set_api_version, api_get, api_get_list,
+    load_dotenv, set_base_url, set_api_origin, set_api_version, api_get, api_get_list,
     api_get_paginated, api_post, api_patch, api_delete, load_profile,
     detect_prefix, validate_profile_paths, list_profiles, get_request_count,
     api_v2_post, v2_enabled,
@@ -1969,6 +1969,7 @@ Input sections: ## Items, ## Modules, ## Pages, ## Intake (+ ## Descriptions,
             args.env = Path(os.path.expanduser(profile["env"]))
         validate_profile_paths(profile, require_output=False)
         set_api_version(profile.get("api_version", "1"))
+        set_api_origin(profile.get("base_url"))
 
     # Validate required args
     if not args.workspace or not args.project:

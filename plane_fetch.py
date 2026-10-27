@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 from plane_api import (
-    load_dotenv, set_base_url,
+    load_dotenv, set_base_url, set_api_origin,
     api_get, api_get_list, api_get_paginated, load_profile,
     html_to_text, detect_prefix, validate_profile_paths, list_profiles,
     get_request_count,
@@ -600,6 +600,7 @@ def main():
         if not args.env and "env" in profile:
             args.env = Path(os.path.expanduser(profile["env"]))
         validate_profile_paths(profile, require_output=False)
+        set_api_origin(profile.get("base_url"))
 
     # Validate
     if not args.workspace or not args.project:

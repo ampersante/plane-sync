@@ -24,7 +24,10 @@ __version__ = "0.2.1"
 
 # ── Module state ────────────────────────────────────────────────────────────
 
+DEFAULT_BASE_URL = "https://api.plane.so"
+
 _warnings: list[str] = []
+_origin: str = DEFAULT_BASE_URL  # scheme://host[:port] of the Plane API
 _base_url: str = ""
 _workspace: str = ""
 _project: str = ""
@@ -49,12 +52,67 @@ def clear_warnings() -> None:
     _warnings.clear()
 
 
+def normalize_base_url(raw) -> str:
+    """Validate and normalize a profile `base_url` (the API origin only).
+
+    Returns scheme://host[:port] without a trailing slash. Raises ValueError
+    with a readable message for anything else: a non-string or empty value, a
+    scheme other than http(s), a missing host, userinfo, a path/query/fragment,
+    or plain http:// to any host but localhost/127.0.0.1.
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError("must be a non-empty string like 'https://plane.example.com'")
+    text = raw.strip()
+    try:
+        parts = urllib.parse.urlsplit(text)
+        host = parts.hostname
+        parts.port  # noqa: B018 - raises ValueError on a malformed port
+    except ValueError as e:
+        raise ValueError(f"{raw!r} is not a valid URL ({e})") from None
+    scheme = parts.scheme.lower()
+    if scheme not in ("http", "https"):
+        raise ValueError(f"{raw!r} must start with https:// (or http:// for localhost)")
+    if not host:
+        raise ValueError(f"{raw!r} has no host")
+    if "@" in parts.netloc:
+        raise ValueError(f"{raw!r} must not contain userinfo (user:password@)")
+    if parts.path not in ("", "/") or parts.query or parts.fragment:
+        raise ValueError(f"{raw!r} must be the origin only "
+                         "(scheme://host[:port], no path, query or fragment)")
+    if scheme == "http" and host not in ("localhost", "127.0.0.1"):
+        raise ValueError(f"{raw!r}: plain http:// is allowed only for "
+                         "localhost/127.0.0.1; use https://")
+    return text.rstrip("/")
+
+
+def set_api_origin(base_url=None) -> None:
+    """Set the API origin from a profile's optional `base_url` (None = default).
+
+    Must run before the first request, the v2 probe included. An invalid value
+    is a fatal configuration error (message on stderr, exit 1).
+    """
+    global _origin
+    if base_url is None:
+        _origin = DEFAULT_BASE_URL
+        return
+    try:
+        _origin = normalize_base_url(base_url)
+    except ValueError as e:
+        print(f"Error: profile field 'base_url': {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def get_api_origin() -> str:
+    """Return the current API origin (scheme://host[:port])."""
+    return _origin
+
+
 def set_base_url(workspace: str, project: str) -> None:
     """Set the module-level base URLs (v1 and v2) for all API calls."""
     global _base_url, _workspace, _project
     _workspace = workspace
     _project = project
-    _base_url = f"https://api.plane.so/api/v1/workspaces/{workspace}/projects/{project}"
+    _base_url = f"{_origin}/api/v1/workspaces/{workspace}/projects/{project}"
 
 
 def get_base_url() -> str:
@@ -64,7 +122,7 @@ def get_base_url() -> str:
 
 def v2_base_url() -> str:
     """Return the v2 base URL for the current workspace/project."""
-    return f"https://api.plane.so/api/v2/workspaces/{_workspace}/projects/{_project}"
+    return f"{_origin}/api/v2/workspaces/{_workspace}/projects/{_project}"
 
 
 def get_request_count() -> int:
@@ -225,6 +283,33 @@ def _sleep_if_window_exhausted() -> None:
     time.sleep(sleep_for)
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow a redirect: a 3xx surfaces as HTTPError.
+
+    The Plane API does not redirect. On a self-hosted instance behind a
+    reverse proxy, a 3xx means a login page is answering instead of the API;
+    following it would feed HTML into the JSON parser (and, for POST, turn the
+    mutation into a GET).
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+# urlopen() keeps being the single call site (tests patch it); the process-wide
+# opener it uses is made redirect-free here.
+urllib.request.install_opener(urllib.request.build_opener(_NoRedirect))
+
+
+def _terminal_failure(path: str, message: str, critical: bool) -> dict:
+    """End a request that cannot succeed by retrying: exit (critical) or warn."""
+    if critical:
+        print(f"Error: Failed {path}: {message}", file=sys.stderr)
+        sys.exit(1)
+    _warnings.append(f"Failed {path}: {message}")
+    return {}
+
+
 def _problem_json_fields(e: urllib.error.HTTPError) -> tuple[str, str] | None:
     """Extract (code, detail) from an RFC 9457 problem+json error body.
 
@@ -275,9 +360,22 @@ def _request_with_retry(req: urllib.request.Request, path: str, *,
                 body = resp.read().decode()
                 if not body:
                     return {}  # e.g. 204 No Content from DELETE
-                return json.loads(body)
+                try:
+                    return json.loads(body)
+                except ValueError:
+                    return _terminal_failure(
+                        path, "response is not JSON (a proxy or login page instead of "
+                        "the Plane API? check base_url and the API token)", critical)
         except urllib.error.HTTPError as e:
             _update_rate_limit(e.headers)
+            if 300 <= e.code < 400:
+                target = urllib.parse.urlsplit(e.headers.get("Location", "") or "")
+                shown = f"{target.scheme}://{target.netloc}{target.path}" if target.netloc \
+                    else (target.path or "unknown location")
+                return _terminal_failure(
+                    path, f"HTTP {e.code} redirect to {shown} (not followed). A proxy or "
+                    "login page is answering instead of the Plane API: check base_url "
+                    "and the API token", critical)
             if e.code in (401, 403):
                 print(f"Error: Authentication failed (HTTP {e.code}).", file=sys.stderr)
                 print("Check your PLANE_API_TOKEN. Get one at: Plane → Settings → API Tokens", file=sys.stderr)
@@ -432,8 +530,7 @@ def v2_available() -> bool:
     global _v2_available
     if _v2_available is not None:
         return _v2_available
-    req = urllib.request.Request("https://api.plane.so/api/v2/users/me/",
-                                 headers=_headers())
+    req = urllib.request.Request(f"{_origin}/api/v2/users/me/", headers=_headers())
     data = _request_with_retry(req, "api/v2/users/me/", critical=False)
     _v2_available = bool(data)
     return _v2_available
