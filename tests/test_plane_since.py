@@ -5,6 +5,11 @@ the watermark (next page NOT requested), the watermark being taken from the
 `Listed:` line (a Generated:-based implementation fails the red-gate test),
 byte-in-byte carry of unchanged rows, insertion of new / removal of vanished
 items, and the --since CLI prerequisites (auto mode, Listed: present).
+
+Also covers INV-01 (all Work Items tree levels rendered exactly once): the
+full path places epic → sub-epic → task, keeps the two-level output byte for
+byte, terminates on a parent cycle, and --since refuses a previous file it
+cannot complete.
 """
 
 import io
@@ -437,6 +442,340 @@ class ListedHeaderTests(unittest.TestCase):
         lines = md.splitlines()
         self.assertTrue(lines[1].startswith("Generated:"))
         self.assertEqual(lines[2], "Listed: 2026-01-01T00:00:00Z")
+
+
+# ── INV-01: every Work Items tree level, exactly once ────────────────────────
+
+def _item(uuid, seq, name, parent="", priority="medium", state="s1",
+          labels=None, assignees=None):
+    return {"id": uuid, "sequence_id": seq, "name": name, "priority": priority,
+            "state": state, "assignees": assignees or [],
+            "labels": labels or [], "parent": parent, "module_ids": [],
+            "description_html": ""}
+
+
+_MAPS = {"state": {"s1": {"name": "Todo", "group": "unstarted"}},
+         "label": {"l1": "l1"}, "member": {"m1": "Alice"},
+         "item_module": {"u1": "M1"}}
+
+
+def _full_data(work_items):
+    return {
+        "states": [{"id": "s1", "name": "Todo", "group": "unstarted",
+                    "sequence": 0}],
+        "labels": [], "members": [], "modules": [],
+        "work_items": list(work_items), "module_membership": {}, "relations": {},
+        "include_descriptions": False, "pages": [], "intake": [],
+        "listed_at": "2026-01-01T00:00:00Z", "item_count": len(work_items),
+    }
+
+
+def _full_markdown(data, maps):
+    data["module_counts"] = build_module_counts(data, maps)
+    data["item_rows"] = build_item_rows(data, maps, "PRJ")
+    data["desc_blocks"] = build_desc_blocks(data, maps, "PRJ")
+    return render_markdown(data, maps, [], "w", "12345678-abcd", "PRJ")
+
+
+def _work_items_section(data, maps):
+    """Rendered Work Items section: `## Work Items` up to `## Relations`."""
+    return _section(_full_markdown(data, maps))
+
+
+def _section(md):
+    return md[md.index("## Work Items"):md.index("## Relations")]
+
+
+_TWO_LEVEL_ITEMS = [
+    _item("u1", 1, "Epic | one", priority="high"),
+    _item("u2", 2, "Task two", parent="u1", labels=["l1"], assignees=["m1"]),
+    _item("u3", 3, "Task three", parent="u1", priority="low"),
+    _item("u4", 4, "Standalone", priority="low"),
+]
+
+# Captured from the renderer before the all-levels change: the two-level
+# regression golden. Any difference here is a format regression.
+_TWO_LEVEL_EXPECTED = """\
+## Work Items
+
+### Top-level
+| ID | Name | State | Priority | Labels | Assignees | Module |
+|---|---|---|---|---|---|---|
+| PRJ-1 | Epic \\| one | Todo | high |  |  | M1 |
+| PRJ-4 | Standalone | Todo | low |  |  |  |
+
+### Children (by parent)
+
+#### PRJ-1: Epic \\| one
+| ID | Name | State | Priority | Labels | Assignees |
+|---|---|---|---|---|---|
+| PRJ-2 | Task two | Todo | medium | l1 | Alice |
+| PRJ-3 | Task three | Todo | low |  |  |
+
+"""
+
+
+class FullRenderAllLevelsTests(unittest.TestCase):
+    """INV-01 in the full path: every level is placed, exactly once."""
+
+    def test_three_level_tree_places_every_row_once(self):
+        items = [
+            _item("u1", 1, "Epic", priority="high"),
+            _item("u2", 2, "Sub epic", parent="u1"),
+            _item("u3", 3, "Task", parent="u2"),
+            _item("u5", 5, "Second task", parent="u2", priority="low"),
+            _item("u4", 4, "Other epic", priority="low"),
+        ]
+        rows = build_item_rows(_full_data(items), _MAPS, "PRJ")
+        self.assertEqual([seq for seq, _ in rows["top"]], [1, 4])
+        self.assertEqual([pseq for pseq, _h, _r in rows["children"]], [1, 2])
+        first, second = rows["children"]
+        self.assertEqual(first[1], "#### PRJ-1: Epic")
+        self.assertEqual([seq for seq, _ in first[2]], [2])
+        self.assertEqual(second[1], "#### PRJ-2: Sub epic")
+        self.assertEqual([seq for seq, _ in second[2]], [3, 5])
+        rendered = ([seq for seq, _ in rows["top"]]
+                    + [seq for _p, _h, block in rows["children"]
+                       for seq, _line in block])
+        self.assertEqual(sorted(rendered), [1, 2, 3, 4, 5])  # no gaps, no dupes
+        self.assertEqual(rows["problems"], [])
+        # the third level reaches the file, under its own parent's block
+        section = _work_items_section(_full_data(items), _MAPS)
+        lines = section.splitlines()
+        self.assertIn("#### PRJ-2: Sub epic", lines)
+        sub_at = lines.index("#### PRJ-2: Sub epic")
+        task_at = next(i for i, l in enumerate(lines) if l.startswith("| PRJ-3 |"))
+        self.assertGreater(task_at, sub_at)
+        self.assertFalse(any(l.startswith("####") for l in lines[sub_at + 1:task_at]))
+
+    def test_two_level_render_is_byte_identical_to_previous_output(self):
+        section = _work_items_section(_full_data(_TWO_LEVEL_ITEMS), _MAPS)
+        self.assertEqual(section, _TWO_LEVEL_EXPECTED)
+
+    def test_parent_cycle_renders_each_item_once(self):
+        items = [_item("u1", 1, "A", parent="u2"),
+                 _item("u2", 2, "B", parent="u1")]
+        rows = build_item_rows(_full_data(items), _MAPS, "PRJ")
+        rendered = ([seq for seq, _ in rows["top"]]
+                    + [seq for _p, _h, block in rows["children"]
+                       for seq, _line in block])
+        self.assertEqual(sorted(rendered), [1, 2])
+        self.assertEqual(rows["problems"], [])
+        section = _work_items_section(_full_data(items), _MAPS)
+        self.assertEqual(section.count("| PRJ-1 |"), 1)
+        self.assertEqual(section.count("| PRJ-2 |"), 1)
+
+
+# ── --since: a previous file it cannot complete is refused ───────────────────
+
+_OLD_FORMAT_PREV = "\n".join([
+    "# Plane Snapshot",
+    "Generated: 2026-01-01T12:00:00Z | Workspace: w | Project: 12345678... (PRJ)",
+    "Listed: 2026-01-01T11:00:00Z",
+    "Items: 3 | Relations: 0 | Modules: 0 | Warnings: 0",
+    "Sections: States → Labels → Work Items → Relations → Modules",
+    "",
+    "## States",
+    "| Name | Group |",
+    "|---|---|",
+    "| Todo | unstarted |",
+    "",
+    "## Work Items",
+    "",
+    "### Top-level",
+    "| ID | Name | State | Priority | Labels | Assignees | Module |",
+    "|---|---|---|---|---|---|---|",
+    "| PRJ-1 | Epic | Todo | high |  |  |  |",
+    "",
+    "### Children (by parent)",
+    "",
+    "#### PRJ-1: Epic",
+    "| ID | Name | State | Priority | Labels | Assignees |",
+    "|---|---|---|---|---|---|",
+    "| PRJ-2 | Sub epic | Todo | medium |  |  |",
+    "",
+    "## Relations",
+    "| Source | Type | Target |",
+    "|---|---|---|",
+    "",
+]) + "\n"
+
+_NEW_FORMAT_PREV = "\n".join([
+    "# Plane Snapshot",
+    "Generated: 2026-01-01T12:00:00Z | Workspace: w | Project: 12345678... (PRJ)",
+    "Listed: 2026-01-01T11:00:00Z",
+    "Items: 2 | Relations: 0 | Modules: 0 | Warnings: 0",
+    "Sections: States → Labels → Work Items → Relations → Modules",
+    "",
+    "## States",
+    "| Name | Group |",
+    "|---|---|",
+    "| Todo | unstarted |",
+    "",
+    "## Work Items",
+    "",
+    "### Top-level",
+    "| ID | Name | State | Priority | Labels | Assignees | Module |",
+    "|---|---|---|---|---|---|---|",
+    "| PRJ-1 | Epic \\| one | Todo | high |  |  |  |",
+    "",
+    "### Children (by parent)",
+    "",
+    "#### PRJ-1: Epic \\| one",
+    "| ID | Name | State | Priority | Labels | Assignees |",
+    "|---|---|---|---|---|---|",
+    "| PRJ-2 | Sub \\| epic | Todo | medium |  |  |",
+    "",
+    "## Relations",
+    "| Source | Type | Target |",
+    "|---|---|---|",
+    "",
+]) + "\n"
+
+
+def _since_payload(prev_text, directory, work_items=()):
+    prev = parse_prev_snapshot(prev_text)
+    return {
+        "states": [{"id": "s1", "name": "Todo", "group": "unstarted",
+                    "sequence": 0}],
+        "labels": [], "members": [], "modules": [],
+        "work_items": list(work_items), "module_membership": {},
+        "relations": {}, "include_descriptions": False, "pages": [], "intake": [],
+        "listed_at": "2026-01-02T00:00:00Z", "item_count": len(directory),
+        "since": {"watermark": "2026-01-01T11:00:00Z",
+                  "top_rows": prev["top_rows"],
+                  "children": prev["children"],
+                  "desc_blocks": prev["desc_blocks"],
+                  "directory": directory},
+    }
+
+
+class _SinceMainCase(unittest.TestCase):
+    """Runs plane_snapshot.main() in --since mode on a canned fetch payload."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._old_argv = sys.argv
+        self._old_get_api_version = plane_snapshot.get_api_version
+        self._old_v2_enabled = plane_snapshot.v2_enabled
+        self._old_fetch_since = plane_snapshot.fetch_since_data
+        plane_snapshot.get_api_version = lambda: "auto"
+        plane_snapshot.v2_enabled = lambda: True
+
+    def tearDown(self):
+        sys.argv = self._old_argv
+        plane_snapshot.get_api_version = self._old_get_api_version
+        plane_snapshot.v2_enabled = self._old_v2_enabled
+        plane_snapshot.fetch_since_data = self._old_fetch_since
+        self._tmp.cleanup()
+
+    def _run(self, prev_text, payload):
+        prev_path = Path(self._tmp.name) / "prev.md"
+        prev_path.write_text(prev_text, encoding="utf-8")
+        out_path = Path(self._tmp.name) / "out.md"
+        sys.argv = ["plane_snapshot.py", "--since", str(prev_path),
+                    "-w", "w", "-p", "p", "--prefix", "PRJ", "-o", str(out_path)]
+        plane_snapshot.fetch_since_data = lambda args, prev, watermark: payload
+        err = io.StringIO()
+        try:
+            with redirect_stderr(err):
+                plane_snapshot.main()
+        except SystemExit as e:
+            return e.code, err.getvalue(), out_path
+        return None, err.getvalue(), out_path
+
+
+class SinceRefusesIncompletePreviousFileTests(_SinceMainCase):
+    """CHK-05 red gate: a previous file rendered by the flattening renderer
+    cannot be completed incrementally — refuse and write nothing."""
+
+    def test_old_format_previous_file_is_refused_and_nothing_is_written(self):
+        directory = {
+            "u1": {"seq": 1, "module_ids": [], "name": "Epic", "parent_id": ""},
+            "u2": {"seq": 2, "module_ids": [], "name": "Sub epic",
+                   "parent_id": "u1"},
+            "u3": {"seq": 3, "module_ids": [], "name": "Task", "parent_id": "u2"},
+        }
+        code, err, out_path = self._run(
+            _OLD_FORMAT_PREV, _since_payload(_OLD_FORMAT_PREV, directory))
+        self.assertEqual(code, 1)
+        self.assertIn("1 элементов отсутствуют в предыдущем snapshot", err)
+        self.assertIn("Listed: 2026-01-01T11:00:00Z", err)
+        self.assertIn("повторите прогон", err)
+        self.assertIn("снимите полный snapshot без --since", err)
+        self.assertFalse(out_path.exists())
+
+
+class SinceAddsMissingLevelTests(_SinceMainCase):
+    """A new grandchild of an existing sub-epic gets a block of its own, with
+    the same heading the full path writes for that parent."""
+
+    def test_unchanged_rows_byte_in_byte_and_new_block_heading_matches_full(self):
+        directory = {
+            "u1": {"seq": 1, "module_ids": [], "name": "Epic | one",
+                   "parent_id": ""},
+            "u2": {"seq": 2, "module_ids": [], "name": "Sub | epic",
+                   "parent_id": "u1"},
+            "u4": {"seq": 4, "module_ids": [], "name": "New task",
+                   "parent_id": "u2"},
+        }
+        fresh = _item("u4", 4, "New task", parent="u2")
+        code, err, out_path = self._run(
+            _NEW_FORMAT_PREV,
+            _since_payload(_NEW_FORMAT_PREV, directory, [fresh]))
+        self.assertIsNone(code, err)
+        text = out_path.read_text(encoding="utf-8")
+
+        # unchanged rows travel byte for byte
+        self.assertEqual(
+            text.count("| PRJ-1 | Epic \\| one | Todo | high |  |  |  |"), 1)
+        self.assertEqual(text.count("#### PRJ-1: Epic \\| one"), 1)
+        self.assertEqual(
+            text.count("| PRJ-2 | Sub \\| epic | Todo | medium |  |  |"), 1)
+
+        # the sub-epic had no block before: its heading equals the full path's
+        full = _work_items_section(_full_data([
+            _item("u1", 1, "Epic | one", priority="high"),
+            _item("u2", 2, "Sub | epic", parent="u1"),
+            _item("u4", 4, "New task", parent="u2"),
+        ]), _MAPS)
+        sub_heading = "#### PRJ-2: Sub \\| epic"
+        self.assertEqual([l for l in text.splitlines()
+                          if l.startswith("#### PRJ-2:")], [sub_heading])
+        self.assertIn(sub_heading, full.splitlines())
+
+        # and the new grandchild sits inside that block, under no other one
+        lines = text.splitlines()
+        head = lines.index(sub_heading)
+        new_rows = [i for i, l in enumerate(lines) if l.startswith("| PRJ-4 |")]
+        self.assertEqual(len(new_rows), 1)
+        self.assertGreater(new_rows[0], head)
+        self.assertFalse(any(l.startswith("####")
+                             for l in lines[head + 1:new_rows[0]]))
+        self.assertEqual(lines[new_rows[0]],
+                         "| PRJ-4 | New task | Todo | medium |  |  |")
+
+
+class SinceAfterFullRenderTests(_SinceMainCase):
+    """A previous file taken by the current renderer is accepted as is: the
+    guard must not refuse the normal full → --since loop."""
+
+    def test_previous_file_from_the_current_renderer_is_accepted_unchanged(self):
+        items = [
+            _item("u1", 1, "Epic", priority="high"),
+            _item("u2", 2, "Sub epic", parent="u1"),
+            _item("u3", 3, "Task", parent="u2"),
+            _item("u4", 4, "Other epic", priority="low"),
+        ]
+        prev_md = _full_markdown(_full_data(items), _MAPS)
+        self.assertIn("#### PRJ-2: Sub epic", prev_md.splitlines())  # 3 levels
+        directory = {i["id"]: {"seq": i["sequence_id"], "module_ids": [],
+                               "name": i["name"], "parent_id": i["parent"]}
+                     for i in items}
+        code, err, out_path = self._run(prev_md, _since_payload(prev_md, directory))
+        self.assertIsNone(code, err)
+        self.assertEqual(_section(out_path.read_text(encoding="utf-8")),
+                         _section(prev_md))
 
 
 if __name__ == "__main__":

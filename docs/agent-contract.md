@@ -35,6 +35,11 @@ into each working project, so agents in any folder get the same rules.
      `plane-sync snapshot --profile X --since snapshot.md` (incremental; needs
      `api_version: "auto"` in the profile). If the profile keeps v1-only or the
      snapshot predates `Listed:` support, run a full snapshot instead.
+     `--since` also requires a previous snapshot that already lists every item,
+     i.e. one taken by the current renderer (Work Items carries every tree
+     level). A file from an older renderer, or an item that appeared between the
+     two requests, is refused: exit 1, nothing written, and the message names
+     the cause. Do not work around it — run a full snapshot.
    - Fresh → use as is
    - `--pages` writes pages to a separate `<output>.pages.md`, not the main snapshot.
 4. Search the snapshot. Work items and modules live in the main `snapshot.md`;

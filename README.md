@@ -115,7 +115,11 @@ plane-sync snapshot --profile my-project --since snapshot.md   # incremental (re
 
 Other flags: `--prefix XX` to force the work item ID prefix, `-o` for a custom output path, `--env` for a custom `.env` path.
 
+Work Items lists the whole item tree, at every level: the top-level table holds the roots, and every item that has children gets its own `#### PREFIX-N: Name` block, so children of a sub-epic (depth 2 and deeper) are in the file too. A parent cycle cannot loop the render: an item no root reaches becomes a root itself.
+
 **Incremental snapshots** — `--since <snapshot.md>` re-reads only what changed since the previous snapshot. The watermark is the `Listed:` line in that file's header (the time of the last listing), so snapshots written before this version — without a `Listed:` line — need one full re-snapshot first. Changed work items are re-fetched; unchanged lines are carried over byte-for-byte. The savings are on lists, details, and pages: relations are always re-fetched in full (Plane does not update `updated_at` when a relation is created), and page content (`--pages`) is re-read only for pages that changed. Requires `api_version: "auto"` in the profile.
+
+`--since` writes nothing and exits 1 when the previous file does not account for every existing item: either that file was rendered by a version that dropped deeper tree levels, or an item appeared between the requests. The error message says which retry applies. A full snapshot (no `--since`) always works.
 
 ### fetch
 

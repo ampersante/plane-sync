@@ -21,6 +21,7 @@ import concurrent.futures
 import os
 import re
 import sys
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -47,7 +48,7 @@ V2_FIELDS_WITH_DESCRIPTIONS = ",".join([
     "name", "sequence_id", "state_id", "priority", "assignee_ids",
     "label_ids", "parent_id", "module_ids", "updated_at", "description_html",
 ])
-V2_DIRECTORY_FIELDS = "id,sequence_id,module_ids"
+V2_DIRECTORY_FIELDS = "id,sequence_id,module_ids,name,parent_id"
 
 _LISTED_RE = re.compile(r"^Listed:\s*(\S+)", re.MULTILINE)
 
@@ -266,15 +267,17 @@ def fetch_changed_items_v2(watermark: datetime, include_descriptions: bool) -> l
 
 
 def fetch_item_directory() -> dict[str, dict]:
-    """uuid → {"seq": sequence_id, "module_ids": [...]} for every existing item
-    (v2 walk, one cursor request per 100 rows).
+    """uuid → {"seq", "module_ids", "name", "parent_id"} for every existing
+    item (v2 walk, one cursor request per 100 rows).
 
     The full existing-item set is the deletion oracle for --since (deleted
     items are absent from the -updated_at listing). The walk also carries the
-    identity map for relation rendering and fresh-child parent placement, and
+    identity map for relation rendering and fresh-child parent placement,
     module_ids — live-verified equal to the v1 module-issues membership
     (probe: 9/9 modules, 0 mismatches) — so module counters stay exact without
-    per-module refetches.
+    per-module refetches, and name/parent_id, so a block heading can be built
+    for a parent whose block the previous file did not have, and rows can be
+    checked against their parent.
     """
     directory: dict[str, dict] = {}
     params = {"per_page": "100", "paginate": "cursor",
@@ -285,6 +288,8 @@ def fetch_item_directory() -> dict[str, dict]:
             directory[row["id"]] = {
                 "seq": row.get("sequence_id"),
                 "module_ids": list(row.get("module_ids") or []),
+                "name": row.get("name") or "",
+                "parent_id": row.get("parent_id") or "",
             }
         if not envelope.get("has_more") or not envelope.get("next_cursor"):
             break
@@ -671,13 +676,74 @@ def build_module_counts(data: dict, maps: dict) -> dict[str, dict]:
     return {mod_id: count_by_state_group(g) for mod_id, g in groups.items()}
 
 
+def _rendered_seqs(top_rows: list, child_blocks: list) -> list[int]:
+    """Sequence ids of every rendered Work Items row (top-level and block)."""
+    seqs = [seq for seq, _line in top_rows]
+    for _pseq, _heading, rows in child_blocks:
+        seqs.extend(seq for seq, _line in rows)
+    return seqs
+
+
+def _placement_problems(top_rows: list, child_blocks: list,
+                        parent_seq: dict, exempt: set) -> list[str]:
+    """INV-01, placement half: a row whose parent exists stands under that
+    parent's block (and a row without a known parent in the top-level table).
+    `exempt` holds sequence ids raised to a root because no root reaches them
+    (a parent cycle), whose "own" parent is not defined."""
+    under: dict[int, int] = {}
+    for pseq, _heading, rows in child_blocks:
+        for seq, _line in rows:
+            under[seq] = pseq
+    top_seqs = {seq for seq, _line in top_rows}
+    misplaced = []
+    for seq in sorted(set(top_seqs) | set(under)):
+        if seq in exempt:
+            continue
+        want = parent_seq.get(seq)
+        got = under.get(seq) if seq in under else None
+        if want != got:
+            misplaced.append((seq, want, got))
+    if not misplaced:
+        return []
+    seq, want, got = misplaced[0]
+    return [f"{len(misplaced)} элементов размещены не под своим родителем, "
+            f"например: #{seq} под #{got}, ожидался #{want}"]
+
+
+def _cycle_members(parent_seq: dict) -> set[int]:
+    """Sequence ids that sit on a parent cycle (their walk re-enters a node it
+    had already passed). No root reaches them, so their placement is exempt."""
+    members: set[int] = set()
+    for start in parent_seq:
+        seen: set[int] = set()
+        node = start
+        while node is not None and node not in seen:
+            seen.add(node)
+            node = parent_seq.get(node)
+        if node is not None:
+            members |= seen
+    return members
+
+
 def build_item_rows(data: dict, maps: dict, id_prefix: str) -> dict:
     """Work Items table rows as exact line strings.
 
-    Returns {"top": [(seq, line)], "children": [(parent_seq, heading, [(seq, line)])]}.
-    Full path renders every row from its item dict (byte-identical to the
-    previous inline renderer); --since keeps unchanged rows byte-in-byte and
-    renders changed/new ones fresh.
+    Returns {"top": [(seq, line)], "children": [(parent_seq, heading,
+    [(seq, line)])], "problems": [str], "fatal": bool}.
+
+    Full path places every item under the root that owns it, at any depth and
+    exactly once: roots are the items without a parent or with a parent outside
+    the set, children follow in sequence_id order, and an item no root reaches
+    (a parent cycle) starts a root under the same rule. A block is emitted for
+    every placed parent that has placed children, in parent sequence_id order —
+    for a two-level tree that is the previous output byte for byte.
+
+    --since keeps unchanged rows byte-in-byte and renders changed/new ones
+    fresh. A row missing from the merged result means the previous file cannot
+    be completed incrementally: "fatal" is set and the caller writes nothing.
+    A successful render with a placement violation keeps "problems" and the
+    caller still writes the file (a long fetch must not be thrown away) but
+    exits 1.
     """
     work_items = data["work_items"]
     since = data.get("since")
@@ -695,20 +761,55 @@ def build_item_rows(data: dict, maps: dict, id_prefix: str) -> dict:
         return "| " + " | ".join(cells) + " |"
 
     if not since:
-        item_ids = {item["id"] for item in work_items}
-        top_level = [item for item in work_items
-                     if not item.get("parent") or item["parent"] not in item_ids]
+        seq_by_id = {item["id"]: item["sequence_id"] for item in work_items}
+        item_ids = set(seq_by_id)
+        parent_of = {item["id"]: (item["parent"]
+                                  if item.get("parent") in item_ids else None)
+                     for item in work_items}
         children_by_parent: dict[str, list[dict]] = {}
         for item in work_items:
-            parent = item.get("parent")
-            if parent and parent in item_ids:
+            parent = parent_of[item["id"]]
+            if parent is not None:
                 children_by_parent.setdefault(parent, []).append(item)
+        for kids in children_by_parent.values():
+            kids.sort(key=lambda x: x["sequence_id"])
+
+        placed: set[str] = set()
+        roots: list[dict] = []
+        placed_children: dict[str, list[dict]] = {}
+
+        def _place(start: dict) -> None:
+            """Place `start` and everything below it; a placed item is never
+            placed twice, so a parent cycle cannot loop."""
+            if start["id"] in placed:
+                return
+            roots.append(start)
+            stack: list[tuple[dict, str | None]] = [(start, None)]
+            while stack:
+                node, parent_id = stack.pop()
+                if node["id"] in placed:
+                    continue
+                placed.add(node["id"])
+                if parent_id is not None:
+                    placed_children.setdefault(parent_id, []).append(node)
+                for kid in reversed(children_by_parent.get(node["id"], [])):
+                    stack.append((kid, node["id"]))
+
+        for root in sorted((i for i in work_items if parent_of[i["id"]] is None),
+                           key=lambda x: x["sequence_id"]):
+            _place(root)
+        # Anything left is unreachable from a root — a cycle in the parent
+        # links. Its smallest sequence id becomes a root and the same rule
+        # applies; there is no separate cycle branch.
+        while len(placed) < len(work_items):
+            _place(min((i for i in work_items if i["id"] not in placed),
+                       key=lambda x: x["sequence_id"]))
 
         top_rows = [(i["sequence_id"], _row(i, top=True))
-                    for i in sorted(top_level, key=lambda x: x["sequence_id"])]
+                    for i in sorted(roots, key=lambda x: x["sequence_id"])]
         child_blocks = []
-        for parent in sorted(top_level, key=lambda x: x["sequence_id"]):
-            kids = children_by_parent.get(parent["id"], [])
+        for parent in sorted(work_items, key=lambda x: x["sequence_id"]):
+            kids = placed_children.get(parent["id"])
             if not kids:
                 continue
             heading = (f"#### {format_item_id(id_prefix, parent['sequence_id'])}: "
@@ -716,7 +817,28 @@ def build_item_rows(data: dict, maps: dict, id_prefix: str) -> dict:
             child_blocks.append((parent["sequence_id"], heading,
                                  [(c["sequence_id"], _row(c, top=False))
                                   for c in sorted(kids, key=lambda x: x["sequence_id"])]))
-        return {"top": top_rows, "children": child_blocks}
+
+        problems = []
+        rendered = _rendered_seqs(top_rows, child_blocks)
+        missing = sorted(set(seq_by_id.values()) - set(rendered))
+        if missing:
+            problems.append(f"{len(missing)} элементов не размещены, "
+                            f"например: #{missing[0]}")
+        duplicated = sorted(seq for seq, count in Counter(rendered).items()
+                            if count > 1)
+        if duplicated:
+            problems.append(f"{len(duplicated)} элементов размещены более одного "
+                            f"раза, например: #{duplicated[0]}")
+        parent_seq = {seq_by_id[item["id"]]:
+                      (seq_by_id[parent_of[item["id"]]]
+                       if parent_of[item["id"]] else None)
+                      for item in work_items}
+        problems.extend(_placement_problems(
+            top_rows, child_blocks, parent_seq,
+            exempt={i["sequence_id"] for i in roots
+                    if parent_of[i["id"]] is not None}))
+        return {"top": top_rows, "children": child_blocks,
+                "problems": problems, "fatal": False}
 
     # --since path
     directory = since["directory"]
@@ -759,16 +881,13 @@ def build_item_rows(data: dict, maps: dict, id_prefix: str) -> dict:
         else:
             child_rows_by_parent.setdefault(pseq, []).extend(rows)
     top_rows.extend(fresh_top_rows)
-
-    top_seqs = {seq for seq, _ in top_rows}
     top_rows.sort(key=lambda x: x[0])
+
+    name_by_seq = {info["seq"]: info.get("name") or ""
+                   for info in directory.values()}
 
     child_blocks = []
     for pseq in sorted(child_rows_by_parent):
-        if pseq not in top_seqs:
-            # Parent is itself a child: the renderer only emits blocks for
-            # top-level parents (pre-existing flattening, preserved).
-            continue
         rows = sorted(child_rows_by_parent[pseq], key=lambda x: x[0])
         carried_block = since["children"].get(pseq)
         if carried_block and pseq in existing_seqs:
@@ -778,15 +897,49 @@ def build_item_rows(data: dict, maps: dict, id_prefix: str) -> dict:
             if parent_item is not None:
                 heading = (f"#### {format_item_id(id_prefix, pseq)}: "
                            f"{esc_md_cell(parent_item['name'])}")
+            elif name_by_seq.get(pseq):
+                # Parent unchanged and without a block before (a sub-epic the
+                # previous renderer flattened): the walk's name, escaped the
+                # same way as in the full path.
+                heading = (f"#### {format_item_id(id_prefix, pseq)}: "
+                           f"{esc_md_cell(name_by_seq[pseq])}")
             else:
-                # Unchanged parent that had no children block before: reuse the
-                # (already escaped) name cell from its carried row.
+                # Parent absent from the walk: only a parent that used to be
+                # top-level has a row to reuse the (already escaped) name from.
                 line = since["top_rows"].get(pseq, "")
                 cells = split_md_table_row(line)
                 name_cell = cells[1] if len(cells) > 1 else ""
                 heading = f"#### {format_item_id(id_prefix, pseq)}: {name_cell}"
         child_blocks.append((pseq, heading, rows))
-    return {"top": top_rows, "children": child_blocks}
+
+    problems: list[str] = []
+    fatal = False
+    rendered = _rendered_seqs(top_rows, child_blocks)
+    missing = sorted(existing_seqs - set(rendered))
+    if missing:
+        fatal = True
+        problems.append(
+            f"{len(missing)} элементов отсутствуют в предыдущем snapshot "
+            f"(Listed: {since.get('watermark')}). Если этот файл снят текущей "
+            f"версией — повторите прогон: элемент мог появиться между запросами. "
+            f"Если файл снят прежней версией — снимите полный snapshot без --since.")
+    duplicated = sorted(seq for seq, count in Counter(rendered).items()
+                        if count > 1)
+    if duplicated:
+        fatal = True
+        problems.append(
+            f"{len(duplicated)} элементов отрендерены более одного раза "
+            f"(Listed: {since.get('watermark')}), например: #{duplicated[0]}. "
+            f"Если файл снят прежней версией — снимите полный snapshot без --since.")
+    seq_parent: dict[int, int | None] = {}
+    for info in directory.values():
+        parent = info.get("parent_id") or ""
+        pinfo = directory.get(parent) if parent else None
+        seq_parent[info["seq"]] = pinfo["seq"] if pinfo else None
+    problems.extend(_placement_problems(
+        top_rows, child_blocks, seq_parent, exempt=_cycle_members(seq_parent)))
+    return {"top": top_rows, "children": child_blocks,
+            "problems": problems, "fatal": fatal}
 
 
 def build_desc_blocks(data: dict, maps: dict, id_prefix: str) -> list[tuple[int, list]]:
@@ -1180,7 +1333,15 @@ def main():
         print("", file=sys.stderr)
 
     data["module_counts"] = build_module_counts(data, maps)
-    data["item_rows"] = build_item_rows(data, maps, id_prefix)
+    item_rows = build_item_rows(data, maps, id_prefix)
+    data["item_rows"] = item_rows
+    if item_rows["fatal"]:
+        # The previous file cannot be completed incrementally: writing the
+        # merged result would silently drop rows for good.
+        for problem in item_rows["problems"]:
+            print(problem, file=sys.stderr)
+        print(f"Snapshot not written: {args.output}", file=sys.stderr)
+        sys.exit(1)
     data["desc_blocks"] = build_desc_blocks(data, maps, id_prefix)
 
     md = render_markdown(data, maps, warnings, args.workspace, args.project, id_prefix)
@@ -1212,6 +1373,15 @@ def main():
     parts.append(f"{len(warnings)} warnings")
     print(f"  {', '.join(parts)}", file=sys.stderr)
     print(f"{get_request_count()} API requests", file=sys.stderr)
+
+    if item_rows["problems"]:
+        # The snapshot is already on disk (a long fetch is not thrown away),
+        # but the render is not trustworthy.
+        print("", file=sys.stderr)
+        print("Work Items placement check failed:", file=sys.stderr)
+        for problem in item_rows["problems"]:
+            print(f"  - {problem}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

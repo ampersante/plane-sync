@@ -14,7 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `snapshot`: Work Items covers every level of the item tree. Children of a sub-epic (depth 2 and deeper) were dropped from the file — the renderer emitted a block only for top-level parents. Items are now placed from the roots, each exactly once, and an item no root reaches (a parent cycle) becomes a root itself. A render that violates this is reported on stderr and exits 1, but the file is still written.
 - `snapshot`: work item relations from a self-hosted Plane (a list of `{"issue_id", "project_id"}` objects per relation type, not plain UUID strings as on Plane cloud) crashed validation with `unhashable type: 'dict'`. Both shapes are now normalized to UUID strings when fetched.
+
+### Changed
+
+- `snapshot --since`: refuses instead of writing when the merged result misses an existing item — exit 1, nothing written, and the message distinguishes a previous file taken by the flattening renderer (take a full snapshot) from an item that appeared between the requests (repeat the run).
 
 ## [0.2.1] - 2026-10-24
 
