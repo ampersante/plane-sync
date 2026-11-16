@@ -42,6 +42,7 @@ into each working project, so agents in any folder get the same rules.
      the cause. Do not work around it — run a full snapshot.
    - Fresh → use as is
    - `--pages` writes pages to a separate `<output>.pages.md`, not the main snapshot.
+   - On self-hosted Plane Community Edition pages are unavailable via the API (the tools warn or fail with "does not expose pages"): tell the user; do not retry or work around it.
 4. Search the snapshot. Work items and modules live in the main `snapshot.md`;
    pages in `<output>.pages.md`. Match by meaning, not exact string: "core gameplay"
    may be "Core Gameplay Design Document".

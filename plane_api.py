@@ -20,7 +20,7 @@ import urllib.request
 from html.parser import HTMLParser
 from pathlib import Path
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 # ── Module state ────────────────────────────────────────────────────────────
 
@@ -301,6 +301,30 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 urllib.request.install_opener(urllib.request.build_opener(_NoRedirect))
 
 
+PAGES_UNAVAILABLE_MSG = (
+    "this Plane instance does not expose pages through its public API "
+    "(Plane Community Edition has no pages endpoints)")
+
+
+class PagesUnavailable(Exception):
+    """The pages list/create route does not exist on this Plane instance."""
+
+
+def _is_pages_route_404(path: str, e: urllib.error.HTTPError) -> bool:
+    """404 on the pages collection route with Plane's route-not-found body.
+
+    A missing route answers {"error": "Page not found."}; this is only
+    unambiguous for the collection path "pages/" (list/create) - a retrieve
+    of a nonexistent page can answer the same way on Plane Cloud.
+    """
+    if e.code != 404 or path.strip("/") != "pages":
+        return False
+    try:
+        return json.loads(e.read().decode()).get("error") == "Page not found."
+    except (ValueError, AttributeError, OSError):
+        return False
+
+
 def _terminal_failure(path: str, message: str, critical: bool) -> dict:
     """End a request that cannot succeed by retrying: exit (critical) or warn."""
     if critical:
@@ -389,6 +413,8 @@ def _request_with_retry(req: urllib.request.Request, path: str, *,
                 print(f"  Rate limited, waiting {retry_after}s...", file=sys.stderr)
                 time.sleep(retry_after)
                 continue  # don't count as a retry attempt
+            if _is_pages_route_404(path, e):
+                raise PagesUnavailable(PAGES_UNAVAILABLE_MSG)
             if e.code == 404 and not critical:
                 return {}
             if problem_json and 400 <= e.code < 500:

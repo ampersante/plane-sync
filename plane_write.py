@@ -24,7 +24,7 @@ from plane_api import (
     load_dotenv, set_base_url, set_api_origin, set_api_version, api_get, api_get_list,
     api_get_paginated, api_post, api_patch, api_delete, load_profile,
     detect_prefix, validate_profile_paths, list_profiles, get_request_count,
-    api_v2_post, v2_enabled,
+    api_v2_post, v2_enabled, PagesUnavailable,
 )
 from plane_md import INTAKE_STATUS_VALUE, format_item_id, split_md_table_row, unesc_md_cell
 
@@ -1652,7 +1652,11 @@ def execute(resolved: list[ResolvedItem],
             if verbose:
                 print(f"  [POST] pages/ {item.api_body}", file=sys.stderr)
 
-            result = api_post("pages/", item.api_body, critical=False)
+            try:
+                result = api_post("pages/", item.api_body, critical=False)
+            except PagesUnavailable as e:
+                print(f"  [FAIL] Page '{item.spec.name}' — pages: {e}", file=sys.stderr)
+                break
             if not result or "id" not in result:
                 print(f"  [FAIL] Page '{item.spec.name}' — {result}", file=sys.stderr)
                 continue

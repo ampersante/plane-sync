@@ -29,7 +29,7 @@ from plane_api import (
     load_dotenv, get_warnings, set_api_version, get_api_version, set_base_url, set_api_origin,
     api_get, api_get_list, api_get_paginated, api_v2_get, v2_enabled,
     load_profile, html_to_text, detect_prefix, validate_profile_paths,
-    list_profiles, get_request_count,
+    list_profiles, get_request_count, PagesUnavailable,
 )
 from plane_md import (INTAKE_STATUS, STATE_GROUP_COLS, count_by_state_group,
                       esc_md_cell, format_item_id, split_md_table_row,
@@ -216,13 +216,18 @@ def fetch_all_data(include_descriptions: bool, include_pages: bool = False,
     pages: list[dict] = []
     if include_pages:
         print("Fetching pages...", file=sys.stderr)
-        pages_list = api_get_list("pages/")
-        print(f"  Got {len(pages_list)} pages, fetching content...", file=sys.stderr)
+        try:
+            pages_list = api_get_list("pages/")
+        except PagesUnavailable as e:
+            print(f"Warning: pages: {e}; skipping pages", file=sys.stderr)
+            include_pages = False
+        else:
+            print(f"  Got {len(pages_list)} pages, fetching content...", file=sys.stderr)
 
-        pages_by_id = _fetch_concurrent(pages_list, _fetch_page, "Pages", 10)
-        # Preserve original list order (concurrent fetch completes out of order)
-        pages = [pages_by_id[p["id"]] for p in pages_list if p["id"] in pages_by_id]
-        print(f"  Fetched content for {len(pages)} pages", file=sys.stderr)
+            pages_by_id = _fetch_concurrent(pages_list, _fetch_page, "Pages", 10)
+            # Preserve original list order (concurrent fetch completes out of order)
+            pages = [pages_by_id[p["id"]] for p in pages_list if p["id"] in pages_by_id]
+            print(f"  Fetched content for {len(pages)} pages", file=sys.stderr)
 
     data.update({
         "work_items": work_items,
@@ -347,9 +352,14 @@ def fetch_since_data(args, prev: dict, watermark: datetime) -> dict:
     # whose updated_at is at/after the watermark. Unchanged pages carry their
     # content from the previous <output>.pages.md, matched by page name.
     pages: list[dict] = []
+    pages_list = None
     if args.pages:
         print("Fetching pages...", file=sys.stderr)
-        pages_list = api_get_list("pages/")
+        try:
+            pages_list = api_get_list("pages/")
+        except PagesUnavailable as e:
+            print(f"Warning: pages: {e}; skipping pages", file=sys.stderr)
+    if pages_list is not None:
         pages_path = args.output.with_name(args.output.stem + ".pages" + args.output.suffix)
         prev_pages: dict[str, str] | None = None
         if pages_path.is_file():

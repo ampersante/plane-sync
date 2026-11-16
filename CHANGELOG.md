@@ -5,11 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.2] - 2026-11-16
 
 ### Added
 
 - Optional profile key `base_url` (the API origin only, e.g. `"https://plane.example.com"`; default `"https://api.plane.so"`) to target a self-hosted Plane. It applies to the v1 base, the v2 base and the v2 availability probe. A trailing slash is dropped; anything but `http(s)` is rejected, and plain `http://` is accepted only for `localhost`/`127.0.0.1`. Without the key, requests are unchanged.
+- Pages on a Plane instance that has no pages endpoints (self-hosted Community Edition answers `404 {"error": "Page not found."}` on `pages/`): `snapshot --pages` prints a warning and continues without writing or overwriting `<output>.pages.md`; `fetch --page` and page creation in `write` fail with a clear message instead of a generic 404 or a crash.
 - A redirect from the API host (for example a reverse proxy sending an unauthenticated request to an HTML login page) is no longer followed: it is reported as a readable error (the v2 probe treats it as "v2 unavailable"). A non-JSON response body is likewise reported as an error instead of crashing the JSON parser.
 
 ### Fixed

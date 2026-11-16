@@ -24,7 +24,7 @@ from plane_api import (
     load_dotenv, set_base_url, set_api_origin,
     api_get, api_get_list, api_get_paginated, load_profile,
     html_to_text, detect_prefix, validate_profile_paths, list_profiles,
-    get_request_count,
+    get_request_count, PagesUnavailable,
 )
 from plane_md import INTAKE_STATUS, STATE_GROUP_COLS, count_by_state_group, format_item_id
 
@@ -66,13 +66,22 @@ def resolve_work_item(id_str: str) -> tuple[str, list]:
     sys.exit(1)
 
 
+def _pages_list_or_exit() -> list:
+    """List pages; exit 1 with a clear message if the instance has no pages API."""
+    try:
+        return api_get_list("pages/")
+    except PagesUnavailable as e:
+        print(f"Error: pages: {e}.", file=sys.stderr)
+        sys.exit(1)
+
+
 def resolve_page(name_or_uuid: str) -> str:
     """Resolve page by name or UUID. Returns UUID."""
     if is_uuid(name_or_uuid):
         return name_or_uuid
 
     print(f"Resolving page '{name_or_uuid}'...", file=sys.stderr)
-    pages = api_get_list("pages/")
+    pages = _pages_list_or_exit()
     query = name_or_uuid.lower()
 
     # Exact match first
@@ -243,7 +252,14 @@ def fetch_work_item(uuid: str, items: list, opts: dict) -> dict:
 def fetch_page(uuid: str) -> dict:
     """Fetch page with content."""
     print(f"Fetching page...", file=sys.stderr)
-    page = api_get(f"pages/{uuid}/")
+    page = api_get(f"pages/{uuid}/", critical=False)
+    if not page:
+        # Retrieve 404 on a missing route and on a missing page can look alike:
+        # the list route tells them apart (exits if pages are unavailable).
+        _pages_list_or_exit()
+        print(f"Error: Failed pages/{uuid}/: page not found or request failed.",
+              file=sys.stderr)
+        sys.exit(1)
     members = api_get_list("members/")
     member_map = {m["id"]: m["display_name"] for m in members}
     return {"page": page, "member_map": member_map}

@@ -175,4 +175,4 @@ plane-sync init my-project
 
 Инкрементальный снимок `--since` и запись задач пачками (bulk write) требуют ключ `"api_version": "auto"` в профиле (`~/.config/plane-sync/profiles.json`); по умолчанию `"1"` — Plane API v1 без изменений. При недоступности v2 всё автоматически работает через v1.
 
-Для self-hosted Plane добавь в профиль `"base_url": "https://plane.example.com"` (только origin; по умолчанию `https://api.plane.so`). В Community Edition v2 нет — работает v1.
+Для self-hosted Plane добавь в профиль `"base_url": "https://plane.example.com"` (только origin; по умолчанию `https://api.plane.so`). В Community Edition v2 нет — работает v1. Pages в CE через API недоступны: `snapshot --pages` предупреждает и пропускает их (существующий `.pages.md` не перезаписывается), `fetch --page` и создание pages в `write` завершаются с понятной ошибкой.
